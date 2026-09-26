@@ -9,8 +9,8 @@ class StatusRepository {
         require(normalizedHost.isNotBlank()) { "Host is empty" }
         val connection = URL("http://$normalizedHost:8787/status.json").openConnection() as HttpURLConnection
         return try {
-            connection.connectTimeout = 3_000
-            connection.readTimeout = 3_000
+            connection.connectTimeout = 4_000
+            connection.readTimeout = 4_000
             connection.requestMethod = "GET"
             if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
             StatusParser.parse(connection.inputStream.bufferedReader().use { it.readText() })

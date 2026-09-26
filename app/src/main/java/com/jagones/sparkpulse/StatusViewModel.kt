@@ -3,6 +3,7 @@ package com.jagones.sparkpulse
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -16,10 +17,15 @@ data class DashboardState(
     val snapshot: StatusSnapshot = StatusSnapshot(),
     val connection: ConnectionState = ConnectionState.RETRY,
     val demoMode: Boolean = false,
-    val updatedAtMillis: Long? = null
+    val updatedAtMillis: Long? = null,
+    val consecutiveFailures: Int = 0
 )
 
 const val DEFAULT_HOST = "100.102.61.23"
+
+// Number of consecutive failed polls before the UI marks the link OFFLINE.
+// A single transient failure only shows RETRY and keeps the last good data.
+private const val OFFLINE_AFTER_FAILURES = 2
 
 class StatusViewModel(
     private val repository: StatusRepository = StatusRepository()
@@ -55,22 +61,26 @@ class StatusViewModel(
     private suspend fun refresh() {
         val current = state.value
         if (current.demoMode) return
-        state.value = current.copy(connection = ConnectionState.RETRY)
-        runCatching { withContext(Dispatchers.IO) { repository.fetch(current.host) } }
-            .onSuccess { snapshot ->
-                state.value = state.value.copy(
-                    snapshot = snapshot,
-                    connection = ConnectionState.OK,
-                    updatedAtMillis = System.currentTimeMillis()
-                )
-            }
-            .onFailure {
-                state.value = state.value.copy(
-                    connection = ConnectionState.OFFLINE,
-                    snapshot = DemoStatus.snapshot,
-                    updatedAtMillis = null
-                )
-            }
+        try {
+            val snapshot = withContext(Dispatchers.IO) { repository.fetch(current.host) }
+            state.value = state.value.copy(
+                snapshot = snapshot,
+                connection = ConnectionState.OK,
+                updatedAtMillis = System.currentTimeMillis(),
+                consecutiveFailures = 0
+            )
+        } catch (e: CancellationException) {
+            throw e // never swallow coroutine cancellation
+        } catch (e: Exception) {
+            // Keep the last known good snapshot: never swap real data for
+            // demo/empty values on a failed poll. Only the connection flag
+            // changes, and only after enough consecutive failures.
+            val failures = current.consecutiveFailures + 1
+            state.value = state.value.copy(
+                connection = if (failures >= OFFLINE_AFTER_FAILURES) ConnectionState.OFFLINE else ConnectionState.RETRY,
+                consecutiveFailures = failures
+            )
+        }
     }
 }
 

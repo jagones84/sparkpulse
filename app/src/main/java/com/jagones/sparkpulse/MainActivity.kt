@@ -177,8 +177,8 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
                 text = when {
                     state.demoMode -> "DATI CAMPIONE · aggiornamento live sospeso"
                     state.connection == ConnectionState.OK -> "LIVE · ${state.snapshot.host ?: state.host}${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""}"
-                    state.connection == ConnectionState.RETRY -> "RICONNESSIONE · nuovo tentativo automatico"
-                    else -> "OFFLINE · visualizzati dati campione · retry ogni 5 s"
+                    state.connection == ConnectionState.RETRY -> "RICONNESSIONE · valori ultimo aggiornamento · retry ogni 5 s"
+                    else -> "OFFLINE · valori ultimo aggiornamento${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""} · retry ogni 5 s"
                 },
                 color = TextMuted, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
             )
