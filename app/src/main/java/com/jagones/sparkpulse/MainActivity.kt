@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -31,9 +35,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +60,7 @@ private val TextMuted = Color(0xFF9AA8B7)
 private val Mint = Color(0xFF57E3B1)
 private val Amber = Color(0xFFFFC66D)
 private val Coral = Color(0xFFFF7777)
+private val Blue = Color(0xFF8DB8FF)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,6 +81,7 @@ class MainActivity : ComponentActivity() {
 private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
     val state = model.state.value
     var hostInput by remember(state.host) { mutableStateOf(state.host) }
+    var modelToConfirm by remember { mutableStateOf<ModelOption?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -136,6 +146,41 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
             }
         }
         item {
+            SectionCard(title = "MODELLI", trailing = if (state.modelCommandInProgress) "SWITCH IN CORSO" else "") {
+                if (state.models.isEmpty()) {
+                    Text("Lista modelli non disponibile", color = TextMuted, fontSize = 13.sp)
+                } else state.models.forEach { option ->
+                    Row(
+                    Modifier.fillMaxWidth().clickable(enabled = !state.demoMode && !state.modelCommandInProgress && !option.loaded) { modelToConfirm = option }
+                            .padding(vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(if (option.loaded) "CARICATO" else "DISPONIBILE", color = if (option.loaded) Mint else TextMuted,
+                            fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(78.dp))
+                        Text(option.alias, color = TextMain, fontSize = 14.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (!option.loaded) Text("›", color = Mint, fontSize = 22.sp)
+                    }
+                }
+                Button(onClick = model::refreshModels, enabled = !state.demoMode, modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = TextMain)) {
+                    Text("AGGIORNA MODELLI")
+                }
+                state.modelCommandMessage?.let {
+                    Text(it, color = if (it.contains("non riuscito") || it.contains("Errore")) Coral else Mint,
+                        fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        }
+        item {
+            SectionCard(title = "TELEMETRIA · ULTIMI 5 MIN") {
+                TelemetryChart("GPU UTIL", state.history, { it.gpuUtilization }, "%", Mint, 100.0)
+                Spacer(Modifier.height(12.dp))
+                TelemetryChart("GPU TEMP", state.history, { it.gpuTemperatureC }, "°C", Amber, null)
+                Spacer(Modifier.height(12.dp))
+                TelemetryChart("UMA USATA", state.history, { it.unifiedUsedGb }, "GB", Blue, null)
+            }
+        }
+        item {
             SectionCard(title = "TOP PROCESSI", trailing = "${state.snapshot.topProcesses.size} / 3") {
                 if (state.snapshot.topProcesses.isEmpty()) {
                     Text("Nessun processo GPU segnalato", color = TextMuted, fontSize = 14.sp)
@@ -170,18 +215,95 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
                         colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = TextMain)
                     ) { Text(if (state.demoMode) "ESCI DEMO" else "DEMO OFFLINE") }
                 }
+                Text("INTERVALLO POLLING", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(1_000, 2_000, 5_000).forEach { interval ->
+                        Button(
+                            onClick = { model.setPollIntervalMillis(interval) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (state.pollIntervalMillis == interval.toLong()) Mint else PanelRaised,
+                                contentColor = if (state.pollIntervalMillis == interval.toLong()) Ink else TextMain
+                            )
+                        ) { Text("${interval / 1_000} s") }
+                    }
+                }
             }
         }
         item {
             Text(
                 text = when {
-                    state.demoMode -> "DATI CAMPIONE · aggiornamento live sospeso"
-                    state.connection == ConnectionState.OK -> "LIVE · ${state.snapshot.host ?: state.host}${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""}"
-                    state.connection == ConnectionState.RETRY -> "RICONNESSIONE · valori ultimo aggiornamento · retry ogni 5 s"
-                    else -> "OFFLINE · valori ultimo aggiornamento${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""} · retry ogni 5 s"
+                    state.demoMode -> "DATI CAMPIONE · aggiornamento live sospeso · intervallo ${state.pollIntervalMillis / 1_000} s"
+                    state.connection == ConnectionState.OK -> "LIVE · ${state.snapshot.host ?: state.host}${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""} · poll ogni ${state.pollIntervalMillis / 1_000} s"
+                    state.connection == ConnectionState.RETRY -> "RICONNESSIONE · ultimo dato reale · retry ogni ${state.pollIntervalMillis / 1_000} s"
+                    else -> "OFFLINE · ultimo dato reale${state.updatedAtMillis?.let { " · ${Date(it).clockTime()}" } ?: ""} · retry ogni ${state.pollIntervalMillis / 1_000} s"
                 },
                 color = TextMuted, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
             )
+        }
+    }
+    modelToConfirm?.let { option ->
+        AlertDialog(
+            onDismissRequest = { modelToConfirm = null },
+            title = { Text("Cambiare modello?") },
+            text = { Text("Lo switch scarica il modello corrente e può richiedere ~60s. Continuare con ${option.alias}?") },
+            confirmButton = {
+                Button(onClick = {
+                    modelToConfirm = null
+                    model.switchModel(option.alias)
+                }) { Text("CAMBIA MODELLO") }
+            },
+            dismissButton = { Button(onClick = { modelToConfirm = null }) { Text("ANNULLA") } },
+            containerColor = Panel,
+            titleContentColor = TextMain,
+            textContentColor = TextMuted
+        )
+    }
+}
+
+@Composable
+private fun TelemetryChart(
+    title: String,
+    history: List<TelemetryPoint>,
+    value: (TelemetryPoint) -> Double?,
+    unit: String,
+    color: Color,
+    fixedMaximum: Double?
+) {
+    val points = history.mapNotNull { sample -> value(sample)?.let { sample to it } }
+    val current = points.lastOrNull()?.second
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(title, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+            Text(current?.let { "${it.oneDecimal()} $unit" } ?: "—", color = color, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+        Canvas(Modifier.fillMaxWidth().height(72.dp).padding(top = 5.dp)) {
+            val left = 2f
+            val right = size.width - 2f
+            val top = 4f
+            val bottom = size.height - 4f
+            drawLine(PanelRaised, Offset(left, bottom), Offset(right, bottom), strokeWidth = 1.dp.toPx())
+            if (points.size >= 2) {
+                val minTime = points.first().first.timestampSeconds.toDouble()
+                val timeSpan = (points.last().first.timestampSeconds - points.first().first.timestampSeconds).toDouble().coerceAtLeast(1.0)
+                val maximum = fixedMaximum ?: (points.maxOf { it.second } * 1.15).coerceAtLeast(1.0)
+                val path = Path()
+                points.forEachIndexed { index, (sample, metric) ->
+                    val x = left + ((sample.timestampSeconds - minTime) / timeSpan).toFloat() * (right - left)
+                    val y = bottom - (metric / maximum).toFloat().coerceIn(0f, 1f) * (bottom - top)
+                    if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path, color, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+            }
+        }
+        if (points.isEmpty()) {
+            Text("Dati non disponibili", color = TextMuted, fontSize = 10.sp)
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(points.first().first.timestampSeconds.clockTime(), color = TextMuted, fontSize = 9.sp)
+                Text(points.last().first.timestampSeconds.clockTime(), color = TextMuted, fontSize = 9.sp)
+            }
         }
     }
 }
@@ -247,3 +369,4 @@ private fun ConnectionBadge(connection: ConnectionState, demo: Boolean) {
 
 private fun Double.oneDecimal(): String = String.format(Locale.ROOT, "%.1f", this)
 private fun Date.clockTime(): String = SimpleDateFormat("HH:mm:ss", Locale.ROOT).format(this)
+private fun Long.clockTime(): String = Date(this * 1_000).clockTime()
