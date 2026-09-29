@@ -88,7 +88,8 @@ private fun SparkPulseRoot() {
             when (tab) {
                 1 -> ForgeScreen(
                     host = ForgeConfig.host(context),
-                    token = ForgeConfig.token(context)
+                    token = ForgeConfig.token(context),
+                    onSaveConfig = { host, token -> ForgeConfig.save(context, host, token) }
                 )
                 2 -> CommandScreen(
                     host = ForgeConfig.host(context),

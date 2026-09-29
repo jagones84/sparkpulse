@@ -7,8 +7,26 @@ import java.net.URL
 import java.net.URLEncoder
 import org.json.JSONObject
 
-/** SparkForge harness port (systemd unit on the DGX Spark, 127.0.0.1:8790). */
+/** SparkForge harness port (systemd unit on the DGX Spark, listening on :8790). */
 internal const val FORGE_PORT = 8790
+
+/**
+ * Client deadline floor for a cold-start run (v1.5.1). The first token can take
+ * as long as SparkForge's warm-up (`SPARKFORGE_MODEL_LOAD_TIMEOUT`, default
+ * 900 s), so the client must never abort a chat/agent run below this: the
+ * requirement is >= 120 s.
+ */
+internal const val FORGE_MIN_RUN_TIMEOUT_MS = 120_000
+
+/** Non-SSE REST deadline (sessions/tasks/history): comfortably above the floor. */
+internal const val FORGE_REST_READ_TIMEOUT_MS = 300_000
+
+/**
+ * SSE read deadline. Zero means unbounded: the socket relies on server
+ * heartbeats and on the `model.loading` event, so a cold model can warm up for
+ * minutes without being cut off (unbounded is always >= [FORGE_MIN_RUN_TIMEOUT_MS]).
+ */
+internal const val FORGE_SSE_READ_TIMEOUT_MS = 0
 
 /** Strips scheme/trailing slash and validates the configured SparkForge host. */
 internal fun normalizeForgeHost(host: String): String {
@@ -99,7 +117,7 @@ class SseClient {
         val conn = URL(builder.toString()).openConnection() as HttpURLConnection
         connection = conn
         conn.connectTimeout = 8_000
-        conn.readTimeout = 0 // SSE: rely on server heartbeats, disconnect() to stop
+        conn.readTimeout = FORGE_SSE_READ_TIMEOUT_MS // SSE: heartbeats + model.loading, unbounded
         conn.requestMethod = "GET"
         conn.setRequestProperty("Accept", "text/event-stream")
         conn.setRequestProperty("Cache-Control", "no-store")
@@ -142,7 +160,7 @@ class ForgeRest {
         val conn = URL(url.toString()).openConnection() as HttpURLConnection
         return try {
             conn.connectTimeout = 8_000
-            conn.readTimeout = 300_000
+            conn.readTimeout = FORGE_REST_READ_TIMEOUT_MS
             conn.requestMethod = method
             if (bearer.isNotEmpty()) conn.setRequestProperty("Authorization", "Bearer $bearer")
             val payload = rawBody ?: jsonBody?.toByteArray(Charsets.UTF_8)

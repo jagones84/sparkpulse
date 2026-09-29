@@ -27,6 +27,12 @@ data class DashboardState(
     val modelCommandInProgress: Boolean = false
 )
 
+/**
+ * Default DGX Spark host: its Tailscale address on the private tailnet, so a
+ * phone on the tailnet reaches both the dashboard (`:8787`) and SparkForge
+ * (`:8790`) without port-forwarding. Never `127.0.0.1` (that would only work on
+ * the DGX itself). Overridable at runtime from the FORGE settings panel.
+ */
 const val DEFAULT_HOST = "100.102.61.23"
 
 // Number of consecutive failed polls before the UI marks the link OFFLINE.

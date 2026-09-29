@@ -183,6 +183,16 @@ class ForgeViewModel : ViewModel() {
     var statusMessage by mutableStateOf<String?>(null)
         private set
 
+    /** Cold-start banner: set by `model.loading`, cleared by `model.ready`. */
+    var coldStart by mutableStateOf<String?>(null)
+        private set
+
+    /** Outcome of the last "Test connessione" / `/api/selfcheck` probe. */
+    var selfCheck by mutableStateOf<SelfCheckOutcome?>(null)
+        private set
+    var selfChecking by mutableStateOf(false)
+        private set
+
     fun sendChat(host: String, token: String, text: String) {
         if (text.isBlank() || busy) return
         val query = buildString {
@@ -193,6 +203,7 @@ class ForgeViewModel : ViewModel() {
         streamingIndex = messages.lastIndex
         busy = true
         error = null
+        coldStart = null
         reasoning = ""
         streamJob = launchStream(host, token, query,
             onOpen = { },
@@ -210,6 +221,7 @@ class ForgeViewModel : ViewModel() {
         liveThinking = ""
         busy = true
         error = null
+        coldStart = null
         reasoning = ""
         val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
         streamJob = launchStream(host, token, query,
@@ -381,9 +393,33 @@ class ForgeViewModel : ViewModel() {
         }
     }
 
-    /** Quick-action "Dove sei / comandi": invokes the `self` tool via agent-run. */
+    /** `GET /api/selfcheck` — proves the chat path (auth + router) is healthy. */
+    fun testConnection(host: String, token: String) {
+        if (selfChecking) return
+        selfChecking = true
+        selfCheck = null
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) { SelfCheckClient().test(host, token) }
+            selfCheck = outcome
+            selfChecking = false
+        }
+    }
+
+    /**
+     * Quick-action "Dove sei / comandi": it probes `/api/selfcheck` first, so the
+     * outcome is visible even when the LLM is still cold, then invokes the `self`
+     * tool via the agent loop.
+     */
     fun askSelf() {
-        runAgent(boundHost, boundToken, SELF_GOAL)
+        val host = boundHost
+        val token = boundToken
+        viewModelScope.launch {
+            statusMessage = "Dove sei · selfcheck in corso…"
+            val outcome = withContext(Dispatchers.IO) { SelfCheckClient().test(host, token) }
+            selfCheck = outcome
+            statusMessage = "Dove sei · ${outcome.title} — ${outcome.detail}".take(200)
+            runAgent(host, token, SELF_GOAL)
+        }
     }
 
     /** Live `tasks.update` / session / compaction events from the durable SSE feed. */
@@ -434,7 +470,7 @@ class ForgeViewModel : ViewModel() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                failure = e.message ?: "errore di rete"
+                failure = describeNetworkFailure(host, e)
             }
             channel.trySend(SseEvent(null, "__closed__", failure ?: ""))
             channel.close()
@@ -454,6 +490,18 @@ class ForgeViewModel : ViewModel() {
 
     private fun handleChatEvent(event: SseEvent) {
         when (event.type) {
+            "model.loading" -> coldStart = "LLM in avvio… (" +
+                event.json()?.optString("model").orEmpty().ifEmpty { "caricamento" } + ")"
+            "model.ready" -> {
+                coldStart = null
+                val seconds = event.json()?.optDouble("seconds", -1.0) ?: -1.0
+                if (seconds >= 0) banner = "modello pronto in ${seconds.toInt()} s"
+            }
+            "model.load_failed" -> {
+                coldStart = null
+                error = "Caricamento modello fallito: " +
+                    event.json()?.optString("error").orEmpty().ifEmpty { "timeout" }.take(160)
+            }
             "chat.run" -> banner = "run ${event.json()?.optString("run_id").orEmpty()}"
             "chat.delta" -> {
                 val json = event.json() ?: return
@@ -528,6 +576,7 @@ class ForgeViewModel : ViewModel() {
 fun ForgeScreen(
     host: String,
     token: String,
+    onSaveConfig: (String, String) -> Unit = { _, _ -> },
     model: ForgeViewModel = viewModel(key = "forge|$host|$token")
 ) {
     val listState = rememberLazyListState()
@@ -536,6 +585,7 @@ fun ForgeScreen(
     }
     var chatInput by remember { mutableStateOf("") }
     var agentInput by remember { mutableStateOf("") }
+    var showConfig by remember { mutableStateOf(false) }
 
     LaunchedEffect(host, token) { model.bind(host, token) }
 
@@ -550,14 +600,31 @@ fun ForgeScreen(
                 )
                 Text(
                     when {
+                        model.coldStart != null -> "LLM IN AVVIO"
                         model.busy -> "STREAMING"
                         else -> "IDLE"
                     },
-                    color = if (model.busy) FMint else FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                    color = when {
+                        model.coldStart != null -> FAmber
+                        model.busy -> FMint
+                        else -> FTextMuted
+                    }, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                )
+                Button(
+                    onClick = { showConfig = !showConfig },
+                    modifier = Modifier.padding(start = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = FPanelRaised, contentColor = FTextMain)
+                ) { Text("⚙", fontSize = 12.sp) }
+            }
+            model.coldStart?.let {
+                Text(
+                    "⏳ $it — prima risposta possibile entro qualche minuto, attendi senza inviare.",
+                    color = FAmber, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
                 )
             }
             if (model.banner.isNotBlank()) Text(model.banner, color = FBlue, fontSize = 11.sp)
             model.error?.let { Text(it, color = FCoral, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)) }
+            if (showConfig) ForgeConfigPanel(host, token, model, onSaveConfig)
         }
 
         // ── v0.5 toolbar: sessions / tasks / CoT / compact / self ──

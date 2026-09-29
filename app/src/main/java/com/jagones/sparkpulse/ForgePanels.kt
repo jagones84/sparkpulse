@@ -74,6 +74,14 @@ fun ForgeToolbar(model: ForgeViewModel) {
         model.statusMessage?.let {
             Text(it, color = FBlue, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
         }
+        model.selfCheck?.let { sc ->
+            Text(
+                (if (sc.ok) "✅ " else "⛔ ") + sc.title + " · " + sc.detail,
+                color = if (sc.ok) FMint else FCoral,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+        }
         if (sessionsOpen) ForgeSessionsPanel(model)
         if (tasksOpen) ForgeTasksPanel(model)
         if (model.cotOpen) ForgeCotDrawer(model)
@@ -213,4 +221,66 @@ private fun taskColor(status: String) = when (status) {
     "done" -> FMint
     "doing" -> FAmber
     else -> FTextMuted
+}
+
+/**
+ * SparkPulse v1.5.1 — FORGE settings panel: host + token plus a "Test
+ * connessione" button that probes `GET /api/selfcheck` and reports the outcome
+ * in green/red with an explicit reason (401 / timeout / DNS). Purely additive.
+ */
+@Composable
+fun ForgeConfigPanel(
+    host: String,
+    token: String,
+    model: ForgeViewModel,
+    onSaveConfig: (String, String) -> Unit
+) {
+    var hostInput by remember(host) { mutableStateOf(host) }
+    var tokenInput by remember(token) { mutableStateOf(token) }
+
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp)
+            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
+    ) {
+        Text(
+            "IMPOSTAZIONI FORGE · host + token", color = FTextMuted, fontSize = 10.sp,
+            fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+        )
+        OutlinedTextField(
+            value = hostInput, onValueChange = { hostInput = it },
+            label = { Text("Host SparkForge (IP Tailscale DGX)") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        )
+        OutlinedTextField(
+            value = tokenInput, onValueChange = { tokenInput = it },
+            label = { Text("Token FORGE") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { onSaveConfig(hostInput.trim(), tokenInput.trim()) },
+                colors = ButtonDefaults.buttonColors(containerColor = FMint, contentColor = FInk)
+            ) { Text("SALVA", fontSize = 11.sp) }
+            Button(
+                onClick = { model.testConnection(hostInput.trim(), tokenInput.trim()) },
+                enabled = !model.selfChecking,
+                colors = ButtonDefaults.buttonColors(containerColor = FPanelRaised, contentColor = FTextMain)
+            ) { Text(if (model.selfChecking) "TEST…" else "TEST CONNESSIONE", fontSize = 11.sp) }
+        }
+        Text(
+            "Test connessione = GET /api/selfcheck sull'host/porta :$FORGE_PORT in uso.",
+            color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp)
+        )
+        model.selfCheck?.let { sc ->
+            Text(
+                (if (sc.ok) "✅ " else "⛔ ") + sc.title + " · " + sc.detail,
+                color = if (sc.ok) FMint else FCoral, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+    }
 }
