@@ -400,7 +400,7 @@ class ForgeViewModel : ViewModel() {
     // ── v0.6 interactivity: mutate the run graph (add / cancel / re-plan) ──
 
     /** Updates the "new node" field text of the graph panel. */
-    fun setGraphDraft(text: String) {
+    fun updateGraphDraft(text: String) {
         graphDraft = text
     }
 

@@ -241,7 +241,7 @@ private fun GraphActionRow(model: ForgeViewModel) {
         ) {
             OutlinedTextField(
                 value = model.graphDraft,
-                onValueChange = { model.setGraphDraft(it) },
+                onValueChange = { model.updateGraphDraft(it) },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 placeholder = { Text("nuovo nodo…", fontSize = 11.sp) }
