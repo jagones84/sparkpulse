@@ -28,6 +28,18 @@ internal const val FORGE_REST_READ_TIMEOUT_MS = 300_000
  */
 internal const val FORGE_SSE_READ_TIMEOUT_MS = 0
 
+/**
+ * Terminal SSE event (v1.6.1, JAG-49). SparkForge closes every chat/agent
+ * stream with exactly one `done`: that event *is* the end of the exchange, even
+ * when the socket outlives it (v0.6.1 shuts the write side down, older builds
+ * and stalled upstreams did not). The client must therefore stop on `done`
+ * instead of waiting for EOF.
+ */
+internal const val TERMINAL_SSE_EVENT = "done"
+
+/** True when [type] marks the end of a stream. See [TERMINAL_SSE_EVENT]. */
+internal fun isTerminalSseEvent(type: String) = type == TERMINAL_SSE_EVENT
+
 /** Strips scheme/trailing slash and validates the configured SparkForge host. */
 internal fun normalizeForgeHost(host: String): String {
     val normalized = host.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
@@ -115,6 +127,10 @@ class SseClient {
             builder.append(separator).append("token=").append(URLEncoder.encode(bearer, "UTF-8"))
         }
         val conn = URL(builder.toString()).openConnection() as HttpURLConnection
+        // v1.6.1 (JAG-49): a previous Stop() flags this client closed. Every new
+        // stream must start clean, otherwise the read loop would exit at once
+        // and the next message after a Stop would never be answered.
+        closed = false
         connection = conn
         conn.connectTimeout = 8_000
         conn.readTimeout = FORGE_SSE_READ_TIMEOUT_MS // SSE: heartbeats + model.loading, unbounded

@@ -290,6 +290,13 @@ class ForgeViewModel : ViewModel() {
             onEnd = { failure ->
                 failure?.let { error = "Chat interrotta: ${it.take(140)}" }
                 finishStreaming()
+                // v1.6.1 (JAG-49): the stream is over → clear the job and leave
+                // `busy`. Previously this only happened in stop(), so a finished
+                // answer left the UI busy: STOP still visible, next message
+                // silently dropped by the `busy` guard.
+                streamJob = null
+                busy = false
+                coldStart = null
             }
         )
     }
@@ -310,6 +317,7 @@ class ForgeViewModel : ViewModel() {
             onEvent = ::handleAgentEvent,
             onEnd = { failure ->
                 failure?.let { error = "Agente interrotto: ${it.take(140)}" }
+                streamJob = null
                 busy = false
                 liveThinking = ""
             }
@@ -665,7 +673,7 @@ class ForgeViewModel : ViewModel() {
         onEnd: (String?) -> Unit
     ): Job {
         val channel = Channel<SseEvent>(Channel.UNLIMITED)
-        viewModelScope.launch(Dispatchers.IO) {
+        val producer = viewModelScope.launch(Dispatchers.IO) {
             var failure: String? = null
             try {
                 client.stream(host, path, token, onOpen = {
@@ -682,13 +690,28 @@ class ForgeViewModel : ViewModel() {
         }
         return viewModelScope.launch {
             var closedError: String? = null
+            var terminal = false
             for (event in channel) {
                 when (event.type) {
                     "__open__" -> Unit
                     "__closed__" -> closedError = event.data.ifEmpty { null }
-                    else -> onEvent(event)
+                    else -> {
+                        onEvent(event)
+                        // v1.6.1 (JAG-49): `done` is the end of stream. Finalize
+                        // the UI state now and drop the socket, without waiting
+                        // for an EOF the server may never send.
+                        if (isTerminalSseEvent(event.type)) {
+                            terminal = true
+                            break
+                        }
+                    }
                 }
             }
+            if (terminal) {
+                client.close()
+                producer.cancel()
+            }
+            channel.cancel()
             onEnd(closedError)
         }
     }
