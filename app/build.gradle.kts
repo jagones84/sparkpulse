@@ -13,8 +13,8 @@ android {
         applicationId = "com.jagones.sparkpulse"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "1.5.1"
+        versionCode = 8
+        versionName = "1.6"
 
         // Build default token from a gitignored properties file; the secret
         // never lands in the repository (runtime override lives in SharedPreferences).

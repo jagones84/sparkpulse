@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -169,7 +170,7 @@ private fun SessionRow(s: ForgeSession, active: Boolean, model: ForgeViewModel) 
 @Composable
 private fun ForgeGraphPanel(model: ForgeViewModel) {
     Column(
-        Modifier.fillMaxWidth().heightIn(max = 300.dp)
+        Modifier.fillMaxWidth().heightIn(max = 360.dp)
             .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
     ) {
         val done = model.graphNodes.count { it.status == "done" }
@@ -180,6 +181,7 @@ private fun ForgeGraphPanel(model: ForgeViewModel) {
             color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
             letterSpacing = 1.sp, modifier = Modifier.padding(bottom = 4.dp)
         )
+        GraphActionRow(model)
         if (model.graphNodes.isEmpty()) {
             Text(
                 "Nessun grafo per il run corrente. Invia una richiesta: il modello genera " +
@@ -218,6 +220,53 @@ private fun ForgeGraphPanel(model: ForgeViewModel) {
                         if (selected) NodeDetail(n)
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * v0.6 interactivity (task JAG-46 #3): mutate the *current run's* graph from the
+ * phone — add an operator node, cancel the selected one, or ask the server to
+ * re-plan. All three POST `/api/runs/<id>/graph/nodes`; the resulting
+ * `graph.node.*` events update the list live.
+ */
+@Composable
+private fun GraphActionRow(model: ForgeViewModel) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            OutlinedTextField(
+                value = model.graphDraft,
+                onValueChange = { model.setGraphDraft(it) },
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                placeholder = { Text("nuovo nodo…", fontSize = 11.sp) }
+            )
+            Button(
+                onClick = { model.addGraphNode() },
+                enabled = model.graphDraft.isNotBlank(),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) { Text("＋", fontSize = 13.sp) }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Button(
+                onClick = { model.replanGraph() },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+            ) { Text("↻ Re-plan", fontSize = 10.sp) }
+            model.selectedNode?.let { n ->
+                Button(
+                    onClick = { model.cancelGraphNode(n) },
+                    colors = ButtonDefaults.buttonColors(containerColor = FCoral),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                ) { Text("✕ Annulla ${n.id}", fontSize = 10.sp) }
             }
         }
     }

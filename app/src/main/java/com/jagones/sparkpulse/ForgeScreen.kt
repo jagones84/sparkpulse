@@ -140,6 +140,25 @@ internal fun parseGraph(body: String): Pair<String, List<ForgeNode>> {
     return runId to nodes
 }
 
+/**
+ * Builds the JSON body for `POST /api/runs/<id>/graph/nodes` (SparkForge v0.6).
+ * Actions: `add` | `cancel` | `complete` | `update` | `replan`. Kept pure so it
+ * can be unit-tested without a live server. Blank fields are omitted, matching
+ * the server's `body.get(...)`-with-default handler.
+ */
+internal fun graphActionBody(
+    action: String,
+    id: String? = null,
+    label: String? = null,
+    note: String? = null,
+    source: String = "operator"
+): JSONObject = JSONObject()
+    .put("action", action)
+    .put("source", source)
+    .also { o -> id?.takeIf { it.isNotBlank() }?.let { o.put("id", it) } }
+    .also { o -> label?.takeIf { it.isNotBlank() }?.let { o.put("label", it) } }
+    .also { o -> note?.takeIf { it.isNotBlank() }?.let { o.put("note", it) } }
+
 /** Rebuilds the chat transcript from the `messages` array of `GET /api/history`. */
 internal fun parseHistory(body: String): List<ForgeMessage> {
     val arr = runCatching { JSONObject(body).optJSONArray("messages") }.getOrNull() ?: return emptyList()
@@ -233,6 +252,10 @@ class ForgeViewModel : ViewModel() {
     var selectedNode by mutableStateOf<ForgeNode?>(null)
         private set
 
+    /** v0.6 interactivity: text of the "new node" field in the graph panel. */
+    var graphDraft by mutableStateOf("")
+        private set
+
     /** Transient panel feedback (session created/deleted, compaction stats…). */
     var statusMessage by mutableStateOf<String?>(null)
         private set
@@ -253,6 +276,8 @@ class ForgeViewModel : ViewModel() {
             append("/api/chat/stream?message=").append(URLEncoder.encode(text, "UTF-8"))
             sessionId?.let { append("&session=").append(URLEncoder.encode(it, "UTF-8")) }
         }
+        graphGoal = text
+        banner = "pianifico…"
         messages = messages + ForgeMessage("you", text) + ForgeMessage("forge", "", streaming = true)
         streamingIndex = messages.lastIndex
         busy = true
@@ -277,6 +302,8 @@ class ForgeViewModel : ViewModel() {
         error = null
         coldStart = null
         reasoning = ""
+        graphGoal = goal
+        banner = "pianifico…"
         val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
         streamJob = launchStream(host, token, query,
             onOpen = { },
@@ -367,6 +394,64 @@ class ForgeViewModel : ViewModel() {
             }
         } else {
             graphNodes + node
+        }
+    }
+
+    // ── v0.6 interactivity: mutate the run graph (add / cancel / re-plan) ──
+
+    /** Updates the "new node" field text of the graph panel. */
+    fun setGraphDraft(text: String) {
+        graphDraft = text
+    }
+
+    /** Adds an operator node to the current run's graph. */
+    fun addGraphNode() {
+        val label = graphDraft.trim()
+        if (label.isEmpty()) return
+        graphDraft = ""
+        postGraphAction("add", label = label)
+    }
+
+    /** Cancels a node of the current run's graph. */
+    fun cancelGraphNode(node: ForgeNode) {
+        postGraphAction("cancel", id = node.id)
+    }
+
+    /** Asks the server to re-plan the current run (incremental nodes, in place). */
+    fun replanGraph() {
+        postGraphAction("replan", note = graphGoal.ifBlank { null })
+    }
+
+    /**
+     * `POST /api/runs/<id>/graph/nodes` — one mutation against the *current run's*
+     * graph (add | cancel | replan). Live `graph.node.*` SSE events then update the
+     * list on their own; the explicit refresh covers servers without the feed.
+     */
+    private fun postGraphAction(action: String, id: String? = null, label: String? = null, note: String? = null) {
+        val runId = graphRunId
+        val host = boundHost
+        val token = boundToken
+        if (runId.isNullOrBlank() || host.isBlank()) {
+            statusMessage = "Nessun run attivo: invia prima una richiesta a SparkForge."
+            return
+        }
+        val body = graphActionBody(action, id = id, label = label, note = note).toString()
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(
+                        host, token,
+                        "/api/runs/" + URLEncoder.encode(runId, "UTF-8") + "/graph/nodes",
+                        "POST", jsonBody = body
+                    )
+                }
+            }
+            result.onSuccess {
+                statusMessage = "Grafo · $action inviato"
+                refreshGraph(runId)
+            }.onFailure {
+                statusMessage = "Grafo · $action fallito: ${it.message?.take(120)}"
+            }
         }
     }
 
