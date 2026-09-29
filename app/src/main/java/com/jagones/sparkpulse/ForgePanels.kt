@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun ForgeToolbar(model: ForgeViewModel) {
     var sessionsOpen by remember { mutableStateOf(false) }
+    var compactOpen by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -50,9 +51,13 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 if (sessionsOpen) model.refreshSessions()
             }
             ForgeChip(
-                "🧩 GRAFO ${model.graphNodes.count { it.status != "done" }}",
+                "🧩 GRAFO ${model.graphNodes.count { it.status != \"done\" }}",
                 active = model.graphOpen
             ) { model.toggleGraph() }
+            ForgeChip("🗜 COMPACTION", active = compactOpen) {
+                compactOpen = !compactOpen
+                if (compactOpen) model.refreshContext()
+            }
             ForgeChip("🧠 CoT", active = model.cotOpen) { model.toggleCot() }
         }
         Row(
@@ -60,8 +65,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            ForgeChip("🧭 Dove sei / comandi") { model.askSelf() }
-            ForgeChip("⇩ Compatta contesto") { model.compactContext() }
+            ForgeChip("🧭 Dove sei", active = model.selfOpen) { model.toggleSelf() }
             Spacer(Modifier.weight(1f))
             val budget = if (model.contextBudget > 0) model.contextBudget else 6000
             Text(
@@ -72,19 +76,102 @@ fun ForgeToolbar(model: ForgeViewModel) {
             )
         }
         model.statusMessage?.let {
-            Text(it, color = FBlue, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(it, color = FBlue, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                Box(Modifier.clickable { model.dismissStatus() }.padding(start = 6.dp)) {
+                    Text("✕", color = FTextMuted, fontSize = 12.sp)
+                }
+            }
+        }
+        if (sessionsOpen) ForgeSessionsPanel(model) { sessionsOpen = false }
+        if (model.graphOpen) ForgeGraphPanel(model) { model.toggleGraph() }
+        if (compactOpen) ForgeCompactPanel(model) { compactOpen = false }
+        if (model.cotOpen) ForgeCotDrawer(model)
+        if (model.selfOpen) ForgeSelfPanel(model)
+    }
+}
+
+/**
+ * v1.6.3 — collapsible COMPACTION panel: the context meter plus the manual
+ * "compact now" action. Folded away by default so the chat remains the focus.
+ */
+@Composable
+private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 220.dp)
+            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "COMPACTION · contesto sessione", color = FMint, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
+        val budget = if (model.contextBudget > 0) model.contextBudget else 6000
+        val pct = ((model.contextUsed.toFloat() / budget.coerceAtLeast(1)) * 100f).coerceIn(0f, 100f)
+        Box(
+            Modifier.fillMaxWidth().heightIn(min = 8.dp).padding(top = 6.dp)
+                .background(FInk, RoundedCornerShape(999.dp))
+        ) {
+            Box(
+                Modifier.fillMaxWidth(pct / 100f).heightIn(min = 8.dp)
+                    .background(if (model.contextOver) FCoral else FMint, RoundedCornerShape(999.dp))
+            )
+        }
+        Text(
+            "usati ${model.contextUsed} / $budget token" + if (model.contextOver) " · sopra soglia" else "",
+            color = if (model.contextOver) FCoral else FTextMuted, fontSize = 11.sp,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+        Button(
+            onClick = { model.compactContext() },
+            modifier = Modifier.padding(top = 6.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        ) { Text("⇩ Compatta ora", fontSize = 11.sp) }
+    }
+}
+
+/**
+ * v1.6.3 — "Dove sei" panel. Closed by default; the toolbar chip toggles it and
+ * the ✕ always closes it (previously it could not be dismissed). Shows the
+ * `/api/selfcheck` outcome and the live status line of the `self` action.
+ */
+@Composable
+private fun ForgeSelfPanel(model: ForgeViewModel) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 220.dp)
+            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "DOVE SEI · self", color = FViolet, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { model.toggleSelf() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
         }
         model.selfCheck?.let { sc ->
             Text(
-                (if (sc.ok) "✅ " else "⛔ ") + sc.title + " · " + sc.detail,
-                color = if (sc.ok) FMint else FCoral,
-                fontSize = 10.sp,
-                modifier = Modifier.padding(top = 2.dp)
+                (if (sc.ok) "✅ " else "⛔ ") + sc.title,
+                color = if (sc.ok) FMint else FCoral, fontSize = 12.sp,
+                fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp)
             )
+            Text(sc.detail, color = FTextMuted, fontSize = 11.sp)
         }
-        if (sessionsOpen) ForgeSessionsPanel(model)
-        if (model.graphOpen) ForgeGraphPanel(model)
-        if (model.cotOpen) ForgeCotDrawer(model)
+        if (model.selfChecking) {
+            Text("selfcheck in corso…", color = FBlue, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+        }
+        model.statusMessage?.let {
+            Text(it, color = FBlue, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+        }
+        Text(
+            SELF_GOAL,
+            color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp)
+        )
     }
 }
 
@@ -102,16 +189,21 @@ private fun ForgeChip(label: String, active: Boolean = false, onClick: () -> Uni
 
 /** Session list/switch/create/delete (`GET/POST/DELETE /api/sessions`, `GET /api/history`). */
 @Composable
-private fun ForgeSessionsPanel(model: ForgeViewModel) {
+private fun ForgeSessionsPanel(model: ForgeViewModel, onClose: () -> Unit) {
     var newTitle by remember { mutableStateOf("") }
     Column(
         Modifier.fillMaxWidth().heightIn(max = 280.dp)
             .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
     ) {
-        Text(
-            "SESSIONI · /api/sessions", color = FTextMuted, fontSize = 10.sp,
-            fontWeight = FontWeight.Bold, letterSpacing = 1.sp
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "SESSIONI · /api/sessions", color = FTextMuted, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
         Row(
             Modifier.fillMaxWidth().padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -168,7 +260,7 @@ private fun SessionRow(s: ForgeSession, active: Boolean, model: ForgeViewModel) 
  * `done`. Bound to `GET /api/runs/<id>/graph`.
  */
 @Composable
-private fun ForgeGraphPanel(model: ForgeViewModel) {
+private fun ForgeGraphPanel(model: ForgeViewModel, onClose: () -> Unit) {
     Column(
         Modifier.fillMaxWidth().heightIn(max = 360.dp)
             .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
@@ -176,11 +268,16 @@ private fun ForgeGraphPanel(model: ForgeViewModel) {
         val done = model.graphNodes.count { it.status == "done" }
         val runShort = model.graphRunId?.take(8) ?: "-"
         val total = model.graphNodes.size
-        Text(
-            "TASK GRAPH · run $runShort · $done/$total done",
-            color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp, modifier = Modifier.padding(bottom = 4.dp)
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "TASK GRAPH · run $runShort · $done/$total done",
+                color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp, modifier = Modifier.weight(1f).padding(bottom = 4.dp)
+            )
+            Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
         GraphActionRow(model)
         if (model.graphNodes.isEmpty()) {
             Text(

@@ -1,6 +1,7 @@
 package com.jagones.sparkpulse
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -228,6 +231,14 @@ class ForgeViewModel : ViewModel() {
     var cotOpen by mutableStateOf(false)
         private set
 
+    /** v1.6.3: "Dove sei" bottom panel — closed by default, single toggle open/close. */
+    var selfOpen by mutableStateOf(false)
+        private set
+
+    /** v1.6.3: live agent trace is collapsible (open by default, always dismissible). */
+    var traceOpen by mutableStateOf(true)
+        private set
+
     /** Token indicator fed by `GET /api/context`. */
     var contextUsed by mutableStateOf(0)
         private set
@@ -349,6 +360,26 @@ class ForgeViewModel : ViewModel() {
 
     fun toggleCot() {
         cotOpen = !cotOpen
+    }
+
+    /**
+     * v1.6.3 — opens/closes the "Dove sei" panel. Opening runs the selfcheck probe
+     * (and the `self` agent loop); closing dismisses the panel, so the user can
+     * always get rid of it again (previously it stayed on screen forever).
+     */
+    fun toggleSelf() {
+        selfOpen = !selfOpen
+        if (selfOpen) askSelf()
+    }
+
+    /** v1.6.3: collapses/expands the live agent trace panel. */
+    fun toggleTrace() {
+        traceOpen = !traceOpen
+    }
+
+    /** v1.6.3: clears the transient panel feedback line. */
+    fun dismissStatus() {
+        statusMessage = null
     }
 
     // ── v0.6: task graph ──
@@ -880,38 +911,50 @@ fun ForgeScreen(
             if (showConfig) ForgeConfigPanel(host, token, model, onSaveConfig)
         }
 
-        // ── v0.5 toolbar: sessions / tasks / CoT / compact / self ──
-        ForgeToolbar(model)
-
-        // ── transcript ──
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        // ── v1.6.3: scrollable page. Toolbar + transcript + agent trace live in a
+        // vertically scrollable column, so the conversation is never pushed off
+        // screen by the secondary panels. The transcript keeps a bounded height
+        // (min/max) so the chat itself stays visible and usable at all times.
+        Column(
+            Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
         ) {
-            items(model.messages) { message -> ForgeBubble(message) }
-            if (model.liveThinking.isNotBlank()) {
-                item {
-                    Text(
-                        "🧠 ${model.liveThinking.takeLast(600)}",
-                        color = FViolet, fontSize = 11.sp
-                    )
-                }
-            }
-        }
+            // ── v0.5 toolbar: sessions / tasks / CoT / compact / self ──
+            ForgeToolbar(model)
 
-        // ── agent trace (thought → action → observation) ──
-        if (model.agentLines.isNotEmpty()) {
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 160.dp).background(FPanel)
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            // ── transcript (main content) ──
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 260.dp, max = 460.dp)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("AGENTE · TRACE LIVE", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                LazyColumn(Modifier.fillMaxWidth().padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    items(model.agentLines) { line ->
-                        Text(line, color = FTextMuted, fontSize = 11.sp)
+                if (model.messages.isEmpty()) {
+                    item {
+                        Text(
+                            "Nessun messaggio. Scrivi qui sotto per parlare con SparkForge.",
+                            color = FTextMuted, fontSize = 12.sp
+                        )
                     }
                 }
+                items(model.messages) { message -> ForgeBubble(message) }
+                if (model.liveThinking.isNotBlank()) {
+                    item {
+                        Text(
+                            "🧠 ${model.liveThinking.takeLast(600)}",
+                            color = FViolet, fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            // ── agent trace (thought → action → observation), collapsible ──
+            if (model.agentLines.isNotEmpty()) {
+                ForgeAgentTrace(model)
             }
         }
 
@@ -962,6 +1005,37 @@ fun ForgeScreen(
                     onClick = { model.sendChat(host, token, chatInput.trim()); chatInput = "" },
                     enabled = chatInput.isNotBlank()
                 ) { Text("SEND") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ForgeAgentTrace(model: ForgeViewModel) {
+    Column(
+        Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.weight(1f).clickable { model.toggleTrace() }
+            ) {
+                Text(
+                    (if (model.traceOpen) "▾ " else "▸ ") + "AGENTE · TRACE LIVE",
+                    color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+                )
+            }
+            Box(Modifier.clickable { model.toggleTrace() }.padding(6.dp)) {
+                Text(if (model.traceOpen) "✕" else "▸", color = FTextMuted, fontSize = 12.sp)
+            }
+        }
+        if (model.traceOpen) {
+            LazyColumn(
+                Modifier.fillMaxWidth().heightIn(max = 160.dp).padding(top = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                items(model.agentLines) { line ->
+                    Text(line, color = FTextMuted, fontSize = 11.sp)
+                }
             }
         }
     }
