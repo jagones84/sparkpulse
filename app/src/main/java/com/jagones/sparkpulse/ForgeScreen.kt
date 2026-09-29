@@ -98,6 +98,48 @@ internal fun parseTaskArray(arr: JSONArray?): List<ForgeTask> {
     }
 }
 
+/**
+ * One node of the LLM-generated run task graph (SparkForge v0.6). The graph is
+ * bound to a run (`graph.node.added` / `graph.node.updated` over SSE) and every
+ * `done` node carries evidence — which the detail view shows on tap.
+ */
+data class ForgeNode(
+    val id: String,
+    val label: String,
+    val status: String,            // todo | doing | done | blocked | cancelled
+    val deps: List<String>,
+    val evidence: List<String>
+)
+
+/** Parses a single graph node (from `/api/runs/<id>/graph` or a graph.node.* event). */
+internal fun parseGraphNode(o: JSONObject?): ForgeNode? {
+    if (o == null) return null
+    val id = o.optString("id")
+    if (id.isEmpty()) return null
+    val deps = o.optJSONArray("deps")?.let { arr ->
+        (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+    } ?: emptyList()
+    val evidence = o.optJSONArray("evidence")?.let { arr ->
+        (0 until arr.length()).mapNotNull { i ->
+            when (val e = arr.opt(i)) {
+                is JSONObject -> e.optString("text")
+                is String -> e
+                else -> null
+            }
+        }.filter { it.isNotBlank() }
+    } ?: emptyList()
+    return ForgeNode(id, o.optString("label"), o.optString("status", "todo"), deps, evidence)
+}
+
+/** Parses `GET /api/runs/<id>/graph` → (run_id, nodes). */
+internal fun parseGraph(body: String): Pair<String, List<ForgeNode>> {
+    val j = runCatching { JSONObject(body) }.getOrNull() ?: return "" to emptyList()
+    val runId = j.optString("run_id")
+    val arr = j.optJSONArray("nodes") ?: return runId to emptyList()
+    val nodes = (0 until arr.length()).mapNotNull { parseGraphNode(arr.optJSONObject(it)) }
+    return runId to nodes
+}
+
 /** Rebuilds the chat transcript from the `messages` array of `GET /api/history`. */
 internal fun parseHistory(body: String): List<ForgeMessage> {
     val arr = runCatching { JSONObject(body).optJSONArray("messages") }.getOrNull() ?: return emptyList()
@@ -177,6 +219,18 @@ class ForgeViewModel : ViewModel() {
 
     /** Live todo breakdown, seeded from `GET /api/tasks` and updated by SSE. */
     var tasks by mutableStateOf(listOf<ForgeTask>())
+        private set
+
+    // ── v0.6: per-run LLM task graph (live, tap a node for evidence) ──
+    var graphNodes by mutableStateOf(listOf<ForgeNode>())
+        private set
+    var graphRunId by mutableStateOf<String?>(null)
+        private set
+    var graphGoal by mutableStateOf("")
+        private set
+    var graphOpen by mutableStateOf(false)
+        private set
+    var selectedNode by mutableStateOf<ForgeNode?>(null)
         private set
 
     /** Transient panel feedback (session created/deleted, compaction stats…). */
@@ -260,6 +314,60 @@ class ForgeViewModel : ViewModel() {
 
     fun toggleCot() {
         cotOpen = !cotOpen
+    }
+
+    // ── v0.6: task graph ──
+
+    /** Opens/closes the graph panel and re-syncs it from the server. */
+    fun toggleGraph() {
+        graphOpen = !graphOpen
+        graphRunId?.let { refreshGraph(it) }
+    }
+
+    /** Tap-to-detail: selecting the same node again closes the detail. */
+    fun selectNode(node: ForgeNode?) {
+        selectedNode = if (node != null && selectedNode?.id == node.id) null else node
+    }
+
+    /** `GET /api/runs/<id>/graph` — full graph for the current run. */
+    fun refreshGraph(runId: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isBlank() || runId.isBlank()) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, "/api/runs/" + URLEncoder.encode(runId, "UTF-8") + "/graph") }
+            }
+            result.onSuccess { body ->
+                val (rid, nodes) = parseGraph(body)
+                if (rid.isNotEmpty() || nodes.isNotEmpty()) {
+                    graphRunId = rid.ifEmpty { runId }
+                    graphNodes = nodes
+                    selectedNode = selectedNode?.let { s -> nodes.firstOrNull { it.id == s.id } }
+                }
+            }
+        }
+    }
+
+    /** Upserts a node pushed live via `graph.node.added` / `graph.node.updated`. */
+    private fun upsertNode(runId: String, node: ForgeNode) {
+        val rid = runId.ifEmpty { graphRunId ?: "" }
+        if (graphRunId != null && rid.isNotEmpty() && graphRunId != rid) {
+            graphRunId = rid
+            graphNodes = listOf(node)
+            selectedNode = null
+            return
+        }
+        graphRunId = rid.ifEmpty { graphRunId }
+        val index = graphNodes.indexOfFirst { it.id == node.id }
+        graphNodes = if (index >= 0) {
+            graphNodes.toMutableList().also {
+                it[index] = node
+                selectedNode = selectedNode?.let { s -> if (s.id == node.id) node else s }
+            }
+        } else {
+            graphNodes + node
+        }
     }
 
     /** `GET /api/sessions` — list/switch/create/delete source. */
@@ -444,6 +552,18 @@ class ForgeViewModel : ViewModel() {
             for (event in channel) {
                 when (event.type) {
                     "tasks.update" -> event.json()?.optJSONArray("tasks")?.let { tasks = parseTaskArray(it) }
+                    "graph.node.added", "graph.node.updated" -> {
+                        val j = event.json()
+                        parseGraphNode(j?.optJSONObject("node"))?.let {
+                            upsertNode(j?.optString("run").orEmpty(), it)
+                        }
+                    }
+                    "graph.generated" -> statusMessage =
+                        "task graph: ${event.json()?.optInt("nodes") ?: 0} nodi dal modello"
+                    "graph.finalized" -> {
+                        statusMessage = "grafo finalizzato con evidenza"
+                        graphRunId?.let { refreshGraph(it) }
+                    }
                     "session.created", "session.deleted" -> refreshSessions()
                     "context.compact" -> refreshContext()
                 }
@@ -502,7 +622,21 @@ class ForgeViewModel : ViewModel() {
                 error = "Caricamento modello fallito: " +
                     event.json()?.optString("error").orEmpty().ifEmpty { "timeout" }.take(160)
             }
-            "chat.run" -> banner = "run ${event.json()?.optString("run_id").orEmpty()}"
+            "chat.run" -> {
+                val rid = event.json()?.optString("run_id").orEmpty()
+                banner = "run $rid"
+                if (rid.isNotEmpty()) {
+                    graphRunId = rid
+                    refreshGraph(rid)
+                }
+            }
+            "graph.node.added", "graph.node.updated" -> {
+                val j = event.json()
+                parseGraphNode(j?.optJSONObject("node"))?.let {
+                    upsertNode(j?.optString("run").orEmpty(), it)
+                }
+            }
+            "graph.generated" -> banner = "task graph: ${event.json()?.optInt("nodes") ?: 0} nodi"
             "chat.delta" -> {
                 val json = event.json() ?: return
                 val text = json.optString("text")
@@ -530,7 +664,18 @@ class ForgeViewModel : ViewModel() {
     private fun handleAgentEvent(event: SseEvent) {
         val json = event.json() ?: JSONObject()
         when (event.type) {
-            "run" -> banner = "agent ${json.optString("run_id")}"
+            "run" -> {
+                val rid = json.optString("run_id")
+                banner = "agent $rid"
+                if (rid.isNotEmpty()) {
+                    graphRunId = rid
+                    refreshGraph(rid)
+                }
+            }
+            "graph.node.added", "graph.node.updated" -> {
+                parseGraphNode(json.optJSONObject("node"))?.let { upsertNode(json.optString("run"), it) }
+            }
+            "graph.finalized" -> append("🧩 grafo: ${json.optInt("closed")} nodi chiusi con evidenza")
             "agent.start" -> append("▶ obiettivo: ${json.optString("goal").take(160)}")
             "agent.iteration" -> append("— iterazione ${json.optInt("i")}/${json.optInt("of")}")
             "agent.think" -> liveThinking += json.optString("text")

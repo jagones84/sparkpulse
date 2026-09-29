@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun ForgeToolbar(model: ForgeViewModel) {
     var sessionsOpen by remember { mutableStateOf(false) }
-    var tasksOpen by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -49,10 +48,10 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 sessionsOpen = !sessionsOpen
                 if (sessionsOpen) model.refreshSessions()
             }
-            ForgeChip("TASKS ${model.tasks.count { it.status != "done" }}", active = tasksOpen) {
-                tasksOpen = !tasksOpen
-                if (tasksOpen) model.refreshTasks()
-            }
+            ForgeChip(
+                "🧩 GRAFO ${model.graphNodes.count { it.status != "done" }}",
+                active = model.graphOpen
+            ) { model.toggleGraph() }
             ForgeChip("🧠 CoT", active = model.cotOpen) { model.toggleCot() }
         }
         Row(
@@ -83,7 +82,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
             )
         }
         if (sessionsOpen) ForgeSessionsPanel(model)
-        if (tasksOpen) ForgeTasksPanel(model)
+        if (model.graphOpen) ForgeGraphPanel(model)
         if (model.cotOpen) ForgeCotDrawer(model)
     }
 }
@@ -161,30 +160,100 @@ private fun SessionRow(s: ForgeSession, active: Boolean, model: ForgeViewModel) 
     }
 }
 
-/** Live todo breakdown, seeded by `/api/tasks` and kept fresh by the SSE feed. */
+/**
+ * v0.6 — the current run's LLM-generated task graph: streamed live via
+ * `graph.node.added` / `graph.node.updated` (chat + agent + `/api/feed`) and
+ * interactive — tap a node to reveal its deps and the evidence that justified
+ * `done`. Bound to `GET /api/runs/<id>/graph`.
+ */
 @Composable
-private fun ForgeTasksPanel(model: ForgeViewModel) {
+private fun ForgeGraphPanel(model: ForgeViewModel) {
     Column(
-        Modifier.fillMaxWidth().heightIn(max = 240.dp)
+        Modifier.fillMaxWidth().heightIn(max = 300.dp)
             .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
     ) {
+        val done = model.graphNodes.count { it.status == "done" }
+        val runShort = model.graphRunId?.take(8) ?: "-"
+        val total = model.graphNodes.size
         Text(
-            "TASKS · TODO BREAKDOWN (live)", color = FTextMuted, fontSize = 10.sp,
-            fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.padding(bottom = 4.dp)
+            "TASK GRAPH · run $runShort · $done/$total done",
+            color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp, modifier = Modifier.padding(bottom = 4.dp)
         )
-        if (model.tasks.isEmpty()) {
-            Text("Nessun task dal feed /api/tasks.", color = FTextMuted, fontSize = 11.sp)
+        if (model.graphNodes.isEmpty()) {
+            Text(
+                "Nessun grafo per il run corrente. Invia una richiesta: il modello genera " +
+                    "il grafo (write_todos) e lo aggiorna live.",
+                color = FTextMuted, fontSize = 11.sp
+            )
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(model.tasks) { t ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(taskGlyph(t.status), color = taskColor(t.status), fontSize = 12.sp, modifier = Modifier.width(20.dp))
-                        Text(t.title, color = FTextMain, fontSize = 12.sp)
+                items(model.graphNodes) { n ->
+                    val selected = model.selectedNode?.id == n.id
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .background(if (selected) FPanelRaised else FInk, RoundedCornerShape(8.dp))
+                            .clickable { model.selectNode(n) }
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val glyph = nodeGlyph(n.status)
+                            val meta = buildString {
+                                if (n.deps.isNotEmpty()) {
+                                    append(n.deps.joinToString(",", prefix = " [", postfix = "]"))
+                                }
+                                if (n.evidence.isNotEmpty()) {
+                                    if (isNotEmpty()) append(" ")
+                                    append("ev=")
+                                    append(n.evidence.size)
+                                }
+                            }
+                            Text(glyph, color = nodeColor(n.status), fontSize = 12.sp)
+                            Text(n.label, color = FTextMain, fontSize = 12.sp,
+                                modifier = Modifier.weight(1f))
+                            if (meta.isNotEmpty()) {
+                                Text(meta, color = FTextMuted, fontSize = 9.sp)
+                            }
+                        }
+                        if (selected) NodeDetail(n)
                     }
                 }
             }
         }
     }
+}
+
+/** Tap-to-detail: node id/status/deps plus the evidence attached to the node. */
+@Composable
+private fun NodeDetail(n: ForgeNode) {
+    Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+        val depsPart = if (n.deps.isNotEmpty()) " · deps " + n.deps.joinToString(", ") else ""
+        Text(
+            n.id + " · " + n.status + depsPart,
+            color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold
+        )
+        Text(
+            if (n.evidence.isEmpty()) "(nessuna evidenza: i nodi done ne richiedono una)"
+            else n.evidence.joinToString("\n") { "• $it" },
+            color = if (n.evidence.isEmpty()) FTextMuted else FTextMain, fontSize = 11.sp,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
+}
+
+private fun nodeGlyph(status: String) = when (status) {
+    "done" -> "✓"
+    "doing" -> "◐"
+    "blocked" -> "⛔"
+    "cancelled" -> "✕"
+    else -> "○"
+}
+
+private fun nodeColor(status: String) = when (status) {
+    "done" -> FMint
+    "doing" -> FAmber
+    "blocked" -> FCoral
+    else -> FTextMuted
 }
 
 /** Expandable CoT drawer showing the `think` channel of the chat SSE stream. */
