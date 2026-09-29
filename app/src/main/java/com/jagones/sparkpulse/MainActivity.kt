@@ -70,13 +70,46 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Ink, surface = Panel, primary = Mint)) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
-                    SparkPulseDashboard()
+                    SparkPulseRoot()
                 }
             }
         }
     }
 }
 
+@Composable
+private fun SparkPulseRoot() {
+    var tab by remember { mutableStateOf(0) }
+    if (tab == 1) {
+        ForgeScreen(host = DEFAULT_HOST)
+    } else {
+        // Tab switcher over the existing dashboard
+        Column(Modifier.fillMaxSize()) {
+            ForgeTabBar(tab) { tab = it }
+            Box(Modifier.weight(1f)) { SparkPulseDashboard() }
+        }
+    }
+}
+
+@Composable
+private fun ForgeTabBar(current: Int, onSelect: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        listOf("PULSE", "⚡ FORGE").forEachIndexed { index, label ->
+            val selected = current == index
+            Button(
+                onClick = { onSelect(index) },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (selected) Mint else PanelRaised,
+                    contentColor = if (selected) Ink else TextMain
+                )
+            ) { Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+        }
+    }
+}
 @Composable
 private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
     val state = model.state.value
