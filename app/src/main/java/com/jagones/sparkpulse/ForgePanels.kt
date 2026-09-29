@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 fun ForgeToolbar(model: ForgeViewModel) {
     var sessionsOpen by remember { mutableStateOf(false) }
     var compactOpen by remember { mutableStateOf(false) }
+    val graphTodo = model.graphNodes.count { it.status != "done" }
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -51,7 +52,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 if (sessionsOpen) model.refreshSessions()
             }
             ForgeChip(
-                "🧩 GRAFO ${model.graphNodes.count { it.status != \"done\" }}",
+                "🧩 GRAFO $graphTodo",
                 active = model.graphOpen
             ) { model.toggleGraph() }
             ForgeChip("🗜 COMPACTION", active = compactOpen) {
