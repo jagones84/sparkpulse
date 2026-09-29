@@ -41,6 +41,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
@@ -55,6 +57,11 @@ internal val FAmber = Color(0xFFFFC66D)
 internal val FCoral = Color(0xFFFF7777)
 internal val FViolet = Color(0xFFB98BFF)
 
+/** Quick-action "Dove sei / comandi": goal that makes the agent invoke the v0.5 `self` tool. */
+internal const val SELF_GOAL =
+    "Chiama il tool self e riporta dove sei: percorsi repo/data/sessioni, config, docs, " +
+    "stato del servizio SparkForge e come aggiungere skill o server MCP."
+
 /** One chat exchange kept in the Forge transcript. */
 data class ForgeMessage(
     val role: String, // "you" | "forge" | "system"
@@ -62,6 +69,50 @@ data class ForgeMessage(
     val thinking: String? = null,
     val streaming: Boolean = false
 )
+
+/** One persisted SparkForge session, as returned by `GET /api/sessions` (v0.5). */
+data class ForgeSession(val id: String, val title: String, val messages: Int, val created: Double)
+
+/** One todo item from the live task breakdown feed (`tasks.update` / `/api/tasks`). */
+data class ForgeTask(val id: String, val title: String, val status: String)
+
+/** Parses the `{"sessions":[...]}` payload of `GET /api/sessions`. */
+internal fun parseSessions(body: String): List<ForgeSession> {
+    val arr = runCatching { JSONObject(body).optJSONArray("sessions") }.getOrNull() ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        ForgeSession(o.optString("id"), o.optString("title"), o.optInt("messages"), o.optDouble("created", 0.0))
+    }
+}
+
+/** Parses the `{"tasks":[...]}` payload of `GET /api/tasks`. */
+internal fun parseTasks(body: String): List<ForgeTask> =
+    parseTaskArray(runCatching { JSONObject(body).optJSONArray("tasks") }.getOrNull())
+
+/** Parses a `tasks` array (from `/api/tasks` or a `tasks.update` SSE event). */
+internal fun parseTaskArray(arr: JSONArray?): List<ForgeTask> {
+    if (arr == null) return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        ForgeTask(o.optString("id"), o.optString("title"), o.optString("status", "todo"))
+    }
+}
+
+/** Rebuilds the chat transcript from the `messages` array of `GET /api/history`. */
+internal fun parseHistory(body: String): List<ForgeMessage> {
+    val arr = runCatching { JSONObject(body).optJSONArray("messages") }.getOrNull() ?: return emptyList()
+    val out = mutableListOf<ForgeMessage>()
+    for (i in 0 until arr.length()) {
+        val m = arr.optJSONObject(i) ?: continue
+        val role = when (m.optString("role")) {
+            "user" -> "you"
+            "assistant" -> "forge"
+            else -> m.optString("role").ifEmpty { "system" }
+        }
+        out += ForgeMessage(role, m.optString("content"), m.optString("reasoning").ifEmpty { null })
+    }
+    return out
+}
 
 /**
  * SSE-driven Forge/chat state. Both the chat stream and the agent loop push into
@@ -95,6 +146,43 @@ class ForgeViewModel : ViewModel() {
     private var sessionId: String? = null
     private var streamingIndex: Int? = null
 
+    // ── v0.5 additions (extended, not rewritten) ─────────────────────
+    private val rest = ForgeRest()
+    private var boundHost = ""
+    private var boundToken = ""
+    private var tasksSse: SseClient? = null
+    private var tasksJob: Job? = null
+
+    /** Session list for the switch/create/delete panel. */
+    var sessions by mutableStateOf(listOf<ForgeSession>())
+        private set
+
+    /** Id of the session currently loaded into the transcript. */
+    var activeSession by mutableStateOf<String?>(null)
+        private set
+
+    /** CoT drawer content: accumulated `think` channel of the chat stream. */
+    var reasoning by mutableStateOf("")
+        private set
+    var cotOpen by mutableStateOf(false)
+        private set
+
+    /** Token indicator fed by `GET /api/context`. */
+    var contextUsed by mutableStateOf(0)
+        private set
+    var contextBudget by mutableStateOf(0)
+        private set
+    var contextOver by mutableStateOf(false)
+        private set
+
+    /** Live todo breakdown, seeded from `GET /api/tasks` and updated by SSE. */
+    var tasks by mutableStateOf(listOf<ForgeTask>())
+        private set
+
+    /** Transient panel feedback (session created/deleted, compaction stats…). */
+    var statusMessage by mutableStateOf<String?>(null)
+        private set
+
     fun sendChat(host: String, token: String, text: String) {
         if (text.isBlank() || busy) return
         val query = buildString {
@@ -105,6 +193,7 @@ class ForgeViewModel : ViewModel() {
         streamingIndex = messages.lastIndex
         busy = true
         error = null
+        reasoning = ""
         streamJob = launchStream(host, token, query,
             onOpen = { },
             onEvent = ::handleChatEvent,
@@ -121,6 +210,7 @@ class ForgeViewModel : ViewModel() {
         liveThinking = ""
         busy = true
         error = null
+        reasoning = ""
         val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
         streamJob = launchStream(host, token, query,
             onOpen = { },
@@ -141,6 +231,188 @@ class ForgeViewModel : ViewModel() {
         finishStreaming()
         busy = false
         liveThinking = ""
+    }
+
+    // ── v0.5: sessions, context/compaction, tasks feed, self-knowledge ──
+
+    /** Binds the panel endpoints to the configured host/token (idempotent). */
+    fun bind(host: String, token: String) {
+        if (boundHost == host && boundToken == token) return
+        boundHost = host
+        boundToken = token
+        refreshSessions()
+        refreshContext()
+        refreshTasks()
+        startTaskFeed(host, token)
+    }
+
+    fun toggleCot() {
+        cotOpen = !cotOpen
+    }
+
+    /** `GET /api/sessions` — list/switch/create/delete source. */
+    fun refreshSessions() {
+        val host = boundHost
+        val token = boundToken
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) {
+                runCatching { parseSessions(rest.text(host, token, "/api/sessions")) }.getOrDefault(emptyList())
+            }
+            sessions = list
+        }
+    }
+
+    /** `POST /api/sessions` — starts a fresh session and loads it. */
+    fun newSession(title: String) {
+        val host = boundHost
+        val token = boundToken
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(
+                        host, token, "/api/sessions", "POST",
+                        jsonBody = JSONObject().put("title", title.ifBlank { "mobile" }).toString()
+                    )
+                }
+            }
+            result.onSuccess { body ->
+                val id = runCatching { JSONObject(body).optString("id") }.getOrDefault("")
+                if (id.isNotEmpty()) {
+                    sessionId = id
+                    activeSession = id
+                    messages = listOf(ForgeMessage("system", "Nuova sessione $id su SparkForge :$FORGE_PORT."))
+                    reasoning = ""
+                    statusMessage = "Sessione creata: $id"
+                }
+            }.onFailure { statusMessage = "Errore creazione: ${it.message?.take(120)}" }
+            refreshSessions()
+            refreshContext()
+        }
+    }
+
+    /** `GET /api/history?session=<id>` — loads a session transcript into the view. */
+    fun switchSession(id: String) {
+        val host = boundHost
+        val token = boundToken
+        sessionId = id
+        activeSession = id
+        reasoning = ""
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, "/api/history?session=" + URLEncoder.encode(id, "UTF-8")) }
+            }
+            result.onSuccess { body ->
+                messages = parseHistory(body).ifEmpty {
+                    listOf(ForgeMessage("system", "Sessione $id vuota."))
+                }
+                statusMessage = "Sessione attiva: $id"
+            }.onFailure { statusMessage = "Errore history: ${it.message?.take(120)}" }
+            refreshContext()
+        }
+    }
+
+    /** `DELETE /api/sessions/<id>` — removes the session and clears it if active. */
+    fun deleteSession(id: String) {
+        val host = boundHost
+        val token = boundToken
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, "/api/sessions/" + URLEncoder.encode(id, "UTF-8"), "DELETE") }
+            }
+            if (activeSession == id) {
+                sessionId = null
+                activeSession = null
+                messages = listOf(ForgeMessage("system", "Sessione eliminata. Chat senza sessione."))
+            }
+            statusMessage = "Sessione eliminata: $id"
+            refreshSessions()
+        }
+    }
+
+    /** `GET /api/context` — token usage vs budget for the active session. */
+    fun refreshContext() {
+        val host = boundHost
+        val token = boundToken
+        val sid = sessionId
+        viewModelScope.launch {
+            val path = "/api/context" + (sid?.let { "?session=" + URLEncoder.encode(it, "UTF-8") } ?: "")
+            val result = withContext(Dispatchers.IO) { runCatching { rest.text(host, token, path) } }
+            result.onSuccess { body ->
+                val j = runCatching { JSONObject(body) }.getOrNull() ?: return@onSuccess
+                contextUsed = j.optInt("tokens_used")
+                contextBudget = j.optInt("budget_tokens")
+                contextOver = j.optBoolean("over_budget")
+            }
+        }
+    }
+
+    /** `POST /api/context/compact` — compacts the active session, then reloads it. */
+    fun compactContext() {
+        val host = boundHost
+        val token = boundToken
+        val sid = sessionId ?: run {
+            statusMessage = "Nessuna sessione attiva da compattare"
+            return
+        }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(
+                        host, token, "/api/context/compact", "POST",
+                        jsonBody = JSONObject().put("session", sid).toString()
+                    )
+                }
+            }
+            result.onSuccess { body ->
+                val j = runCatching { JSONObject(body) }.getOrNull()
+                statusMessage = "Compattato: ${j?.optInt("input_tokens") ?: "?"} → ${j?.optInt("tokens_after") ?: "?"} token"
+                switchSession(sid)
+            }.onFailure { statusMessage = "Errore compaction: ${it.message?.take(120)}" }
+        }
+    }
+
+    /** `GET /api/tasks` — seed the breakdown before the live feed takes over. */
+    fun refreshTasks() {
+        val host = boundHost
+        val token = boundToken
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { rest.text(host, token, "/api/tasks") } }
+            result.onSuccess { tasks = parseTasks(it) }
+        }
+    }
+
+    /** Quick-action "Dove sei / comandi": invokes the `self` tool via agent-run. */
+    fun askSelf() {
+        runAgent(boundHost, boundToken, SELF_GOAL)
+    }
+
+    /** Live `tasks.update` / session / compaction events from the durable SSE feed. */
+    private fun startTaskFeed(host: String, token: String) {
+        tasksJob?.cancel()
+        tasksSse?.close()
+        tasksJob = viewModelScope.launch {
+            val since = withContext(Dispatchers.IO) { runCatching { rest.latestFeedId(host, token) }.getOrDefault(0L) }
+            val sse = SseClient()
+            tasksSse = sse
+            val channel = Channel<SseEvent>(Channel.UNLIMITED)
+            launch(Dispatchers.IO) {
+                try {
+                    sse.stream(host, "/api/feed?since=$since", token, onOpen = {}, onEvent = { channel.trySend(it) })
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    channel.trySend(SseEvent(null, "__closed__", e.message ?: ""))
+                }
+                channel.close()
+            }
+            for (event in channel) {
+                when (event.type) {
+                    "tasks.update" -> event.json()?.optJSONArray("tasks")?.let { tasks = parseTaskArray(it) }
+                    "session.created", "session.deleted" -> refreshSessions()
+                    "context.compact" -> refreshContext()
+                }
+            }
+        }
     }
 
     private fun launchStream(
@@ -187,7 +459,13 @@ class ForgeViewModel : ViewModel() {
                 val json = event.json() ?: return
                 val text = json.optString("text")
                 if (text.isEmpty()) return
-                json.optString("session").takeIf { it.isNotEmpty() }?.let { sessionId = it }
+                json.optString("session").takeIf { it.isNotEmpty() }?.let {
+                    sessionId = it
+                    activeSession = it
+                }
+                if (json.optString("channel") == "think") {
+                    reasoning = (reasoning + text).takeLast(20_000)
+                }
                 val index = streamingIndex ?: return
                 val current = messages.getOrNull(index) ?: return
                 val updated = if (json.optString("channel") == "think") {
@@ -241,6 +519,7 @@ class ForgeViewModel : ViewModel() {
 
     override fun onCleared() {
         client.close()
+        tasksSse?.close()
         super.onCleared()
     }
 }
@@ -257,6 +536,8 @@ fun ForgeScreen(
     }
     var chatInput by remember { mutableStateOf("") }
     var agentInput by remember { mutableStateOf("") }
+
+    LaunchedEffect(host, token) { model.bind(host, token) }
 
     Column(Modifier.fillMaxSize().imePadding()) {
         // ── header: run banner + plan status ──
@@ -278,6 +559,9 @@ fun ForgeScreen(
             if (model.banner.isNotBlank()) Text(model.banner, color = FBlue, fontSize = 11.sp)
             model.error?.let { Text(it, color = FCoral, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)) }
         }
+
+        // ── v0.5 toolbar: sessions / tasks / CoT / compact / self ──
+        ForgeToolbar(model)
 
         // ── transcript ──
         LazyColumn(
