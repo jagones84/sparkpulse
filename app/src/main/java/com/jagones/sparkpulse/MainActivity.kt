@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,14 +80,23 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun SparkPulseRoot() {
+    val context = LocalContext.current
     var tab by remember { mutableStateOf(0) }
-    if (tab == 1) {
-        ForgeScreen(host = DEFAULT_HOST)
-    } else {
-        // Tab switcher over the existing dashboard
-        Column(Modifier.fillMaxSize()) {
-            ForgeTabBar(tab) { tab = it }
-            Box(Modifier.weight(1f)) { SparkPulseDashboard() }
+    Column(Modifier.fillMaxSize()) {
+        ForgeTabBar(tab) { tab = it }
+        Box(Modifier.weight(1f)) {
+            when (tab) {
+                1 -> ForgeScreen(
+                    host = ForgeConfig.host(context),
+                    token = ForgeConfig.token(context)
+                )
+                2 -> CommandScreen(
+                    host = ForgeConfig.host(context),
+                    token = ForgeConfig.token(context),
+                    onSaveConfig = { host, token -> ForgeConfig.save(context, host, token) }
+                )
+                else -> SparkPulseDashboard()
+            }
         }
     }
 }
@@ -97,7 +107,7 @@ private fun ForgeTabBar(current: Int, onSelect: (Int) -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        listOf("PULSE", "⚡ FORGE").forEachIndexed { index, label ->
+        listOf("PULSE", "⚡ FORGE", "COMMAND").forEachIndexed { index, label ->
             val selected = current == index
             Button(
                 onClick = { onSelect(index) },

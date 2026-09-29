@@ -5,10 +5,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
@@ -19,10 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -32,193 +29,228 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.URLEncoder
 
-private val FInk = Color(0xFF0A0E14)
-private val FPanel = Color(0xFF141B24)
-private val FPanelRaised = Color(0xFF1B2531)
-private val FTextMain = Color(0xFFF0F4F8)
-private val FTextMuted = Color(0xFF9AA8B7)
-private val FMint = Color(0xFF57E3B1)
-private val FBlue = Color(0xFF8DB8FF)
-private val FAmber = Color(0xFFFFC66D)
-private val FCoral = Color(0xFFFF7777)
-private val FViolet = Color(0xFFB98BFF)
+internal val FInk = Color(0xFF0A0E14)
+internal val FPanel = Color(0xFF141B24)
+internal val FPanelRaised = Color(0xFF1B2531)
+internal val FTextMain = Color(0xFFF0F4F8)
+internal val FTextMuted = Color(0xFF9AA8B7)
+internal val FMint = Color(0xFF57E3B1)
+internal val FBlue = Color(0xFF8DB8FF)
+internal val FAmber = Color(0xFFFFC66D)
+internal val FCoral = Color(0xFFFF7777)
+internal val FViolet = Color(0xFFB98BFF)
 
-private const val FORGE_PORT = 8790
-
-/** One chat exchange kept in the Forge screen transcript. */
+/** One chat exchange kept in the Forge transcript. */
 data class ForgeMessage(
     val role: String, // "you" | "forge" | "system"
     val text: String,
-    val thinking: String? = null
+    val thinking: String? = null,
+    val streaming: Boolean = false
 )
 
-/** A step of the harness PLAN. */
-data class ForgePlanStep(val title: String, val done: Boolean)
-
-/** A task of the harness board. */
-data class ForgeTask(val title: String, val status: String)
-
-/** Result of one agent-loop run. */
-data class ForgeAgentTrace(val lines: List<String>, val summary: String)
-
-class ForgeClient {
-    fun chat(host: String, message: String): ForgeMessage {
-        val payload = JSONObject().put("message", message).toString()
-        val body = request(host, "/api/chat", "POST", payload)
-        val reply = body.optString("reply", "")
-        val reasoning = body.optJSONArray("reasoning")?.let { arr ->
-            buildString { for (i in 0 until arr.length()) append(arr.optString(i)) }.trim()
-        } ?: body.optString("reasoning", "").trim().ifEmpty { null }
-        return ForgeMessage("forge", reply, reasoning?.ifEmpty { null })
-    }
-
-    fun plan(host: String): Pair<String, List<ForgePlanStep>> {
-        val body = request(host, "/api/plan", "GET")
-        val goal = body.optString("goal", "")
-        val steps = body.optJSONArray("steps")?.let { arr ->
-            (0 until arr.length()).map { i ->
-                val s = arr.optJSONObject(i) ?: JSONObject()
-                ForgePlanStep(s.optString("title", ""), s.optBoolean("done", false))
-            }
-        } ?: emptyList()
-        return goal to steps
-    }
-
-    fun tasks(host: String): List<ForgeTask> {
-        val body = request(host, "/api/tasks", "GET")
-        return body.optJSONArray("tasks")?.let { arr ->
-            (0 until arr.length()).map { i ->
-                val t = arr.optJSONObject(i) ?: JSONObject()
-                ForgeTask(t.optString("title", ""), t.optString("status", "todo"))
-            }
-        } ?: emptyList()
-    }
-
-    fun agentRun(host: String, goal: String, maxSteps: Int = 4): ForgeAgentTrace {
-        val payload = JSONObject().put("goal", goal).put("max_steps", maxSteps).toString()
-        val body = request(host, "/api/agent/run", "POST", payload)
-        val lines = mutableListOf<String>()
-        body.optJSONArray("trace")?.let { arr ->
-            for (i in 0 until arr.length()) {
-                val t = arr.optJSONObject(i) ?: continue
-                val action = t.optString("action", "")
-                val obs = t.optString("observation", "")
-                val thought = t.optString("thought", "")
-                when {
-                    action == "finish" || obs.isEmpty() -> lines.add("🏁 ${t.optString("summary", "")}")
-                    else -> {
-                        if (thought.isNotBlank()) lines.add("🧠 $thought")
-                        lines.add("⚡ $action → $obs")
-                    }
-                }
-            }
-        }
-        return ForgeAgentTrace(lines, body.optString("model", ""))
-    }
-
-    private fun request(host: String, path: String, method: String, body: String? = null): JSONObject {
-        val normalizedHost = host.trim().removePrefix("http://").removePrefix("https://").trimEnd('/')
-        require(normalizedHost.isNotBlank()) { "Host is empty" }
-        val connection = URL("http://$normalizedHost:$FORGE_PORT$path").openConnection() as HttpURLConnection
-        return try {
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 300_000 // model load can take ~60s+
-            connection.requestMethod = method
-            if (body != null) {
-                connection.doOutput = true
-                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                connection.outputStream.bufferedWriter().use { it.write(body) }
-            }
-            if (connection.responseCode !in 200..299) {
-                val err = try { connection.errorStream?.bufferedReader()?.use { it.readText() } } catch (_: Exception) { null }
-                error("HTTP ${connection.responseCode}${err?.take(160)?.let { ": $it" } ?: ""}")
-            }
-            JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-        } finally {
-            connection.disconnect()
-        }
-    }
-}
-
+/**
+ * SSE-driven Forge/chat state. Both the chat stream and the agent loop push into
+ * a channel consumed on the main dispatcher, so UI deltas arrive ordered and
+ * thread-safe while the blocking socket read happens on IO.
+ */
 class ForgeViewModel : ViewModel() {
-    private val client = ForgeClient()
+    private val client = SseClient()
+    private var streamJob: Job? = null
 
-    var messages by mutableStateOf(listOf(ForgeMessage("system", "Connesso a SparkForge :8790 — scrivi un messaggio o lancia l'agente.")))
+    var messages by mutableStateOf(
+        listOf(
+            ForgeMessage(
+                "system",
+                "SSE nativo attivo su SparkForge :$FORGE_PORT — chat, agente e feed in streaming."
+            )
+        )
+    )
         private set
-    var planGoal by mutableStateOf("")
-    var planSteps by mutableStateOf(listOf<ForgePlanStep>())
-    var tasks by mutableStateOf(listOf<ForgeTask>())
+    var agentLines by mutableStateOf(listOf<String>())
+        private set
+    var liveThinking by mutableStateOf("")
+        private set
+    var banner by mutableStateOf("")
+        private set
     var busy by mutableStateOf(false)
+        private set
     var error by mutableStateOf<String?>(null)
+        private set
 
-    fun refresh(host: String) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                try {
-                    val (goal, steps) = client.plan(host)
-                    planGoal = goal; planSteps = steps
-                    tasks = client.tasks(host)
-                    error = null
-                } catch (e: Exception) {
-                    error = "Forge non raggiungibile: ${e.message?.take(120)}"
+    private var sessionId: String? = null
+    private var streamingIndex: Int? = null
+
+    fun sendChat(host: String, token: String, text: String) {
+        if (text.isBlank() || busy) return
+        val query = buildString {
+            append("/api/chat/stream?message=").append(URLEncoder.encode(text, "UTF-8"))
+            sessionId?.let { append("&session=").append(URLEncoder.encode(it, "UTF-8")) }
+        }
+        messages = messages + ForgeMessage("you", text) + ForgeMessage("forge", "", streaming = true)
+        streamingIndex = messages.lastIndex
+        busy = true
+        error = null
+        streamJob = launchStream(host, token, query,
+            onOpen = { },
+            onEvent = ::handleChatEvent,
+            onEnd = { failure ->
+                failure?.let { error = "Chat interrotta: ${it.take(140)}" }
+                finishStreaming()
+            }
+        )
+    }
+
+    fun runAgent(host: String, token: String, goal: String) {
+        if (goal.isBlank() || busy) return
+        agentLines = listOf("▶ obiettivo: ${goal.take(160)}")
+        liveThinking = ""
+        busy = true
+        error = null
+        val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
+        streamJob = launchStream(host, token, query,
+            onOpen = { },
+            onEvent = ::handleAgentEvent,
+            onEnd = { failure ->
+                failure?.let { error = "Agente interrotto: ${it.take(140)}" }
+                busy = false
+                liveThinking = ""
+            }
+        )
+    }
+
+    /** Drops the socket and cancels the current SSE stream (chat or agent). */
+    fun stop() {
+        client.close()
+        streamJob?.cancel()
+        streamJob = null
+        finishStreaming()
+        busy = false
+        liveThinking = ""
+    }
+
+    private fun launchStream(
+        host: String,
+        token: String,
+        path: String,
+        onOpen: () -> Unit,
+        onEvent: (SseEvent) -> Unit,
+        onEnd: (String?) -> Unit
+    ): Job {
+        val channel = Channel<SseEvent>(Channel.UNLIMITED)
+        viewModelScope.launch(Dispatchers.IO) {
+            var failure: String? = null
+            try {
+                client.stream(host, path, token, onOpen = {
+                    channel.trySend(SseEvent(null, "__open__", "{}"))
+                    onOpen()
+                }, onEvent = { channel.trySend(it) })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failure = e.message ?: "errore di rete"
+            }
+            channel.trySend(SseEvent(null, "__closed__", failure ?: ""))
+            channel.close()
+        }
+        return viewModelScope.launch {
+            var closedError: String? = null
+            for (event in channel) {
+                when (event.type) {
+                    "__open__" -> Unit
+                    "__closed__" -> closedError = event.data.ifEmpty { null }
+                    else -> onEvent(event)
                 }
             }
+            onEnd(closedError)
         }
     }
 
-    fun send(host: String, text: String) {
-        if (text.isBlank() || busy) return
-        messages = messages + ForgeMessage("you", text)
-        busy = true; error = null
-        viewModelScope.launch {
-            val reply = withContext(Dispatchers.IO) {
-                runCatching { client.chat(host, text) }
+    private fun handleChatEvent(event: SseEvent) {
+        when (event.type) {
+            "chat.run" -> banner = "run ${event.json()?.optString("run_id").orEmpty()}"
+            "chat.delta" -> {
+                val json = event.json() ?: return
+                val text = json.optString("text")
+                if (text.isEmpty()) return
+                json.optString("session").takeIf { it.isNotEmpty() }?.let { sessionId = it }
+                val index = streamingIndex ?: return
+                val current = messages.getOrNull(index) ?: return
+                val updated = if (json.optString("channel") == "think") {
+                    current.copy(thinking = (current.thinking ?: "") + text)
+                } else {
+                    current.copy(text = current.text + text)
+                }
+                messages = messages.toMutableList().also { it[index] = updated }
             }
-            busy = false
-            reply.fold(
-                onSuccess = { messages = messages + it },
-                onFailure = { error = "Chat fallita: ${it.message?.take(160)}" }
-            )
+            "error" -> error = "Chat: " + (event.json()?.optString("error") ?: "errore").take(160)
         }
     }
 
-    fun runAgent(host: String, goal: String) {
-        if (goal.isBlank() || busy) return
-        messages = messages + ForgeMessage("you", "⚡ agente: $goal")
-        busy = true; error = null
-        viewModelScope.launch {
-            val trace = withContext(Dispatchers.IO) {
-                runCatching { client.agentRun(host, goal) }
+    private fun handleAgentEvent(event: SseEvent) {
+        val json = event.json() ?: JSONObject()
+        when (event.type) {
+            "run" -> banner = "agent ${json.optString("run_id")}"
+            "agent.start" -> append("▶ obiettivo: ${json.optString("goal").take(160)}")
+            "agent.iteration" -> append("— iterazione ${json.optInt("i")}/${json.optInt("of")}")
+            "agent.think" -> liveThinking += json.optString("text")
+            "agent.thought" -> {
+                val thought = json.optString("thought").trim()
+                if (thought.isNotEmpty()) append("🧠 $thought")
+                val action = json.optString("action")
+                if (action.isNotEmpty() && action != "finish") append("⚡ $action")
+                liveThinking = ""
             }
-            busy = false
-            trace.fold(
-                onSuccess = {
-                    messages = messages + ForgeMessage("forge", it.lines.joinToString("\n"))
-                    refresh(host)
-                },
-                onFailure = { error = "Agente fallito: ${it.message?.take(160)}" }
-            )
+            "agent.observation" -> append("👁 ${json.optString("observation").take(400)}")
+            "agent.finish" -> append("🏁 ${json.optString("summary").take(200)}")
+            "agent.aborted" -> append("⛔ interrotto: ${json.optString("summary").take(160)}")
+            "agent.error" -> error = "Agente: " + json.optString("error").take(160)
+            "approval.request" -> append("🛡 approvazione richiesta · ${json.optString("tool")} · #${json.optString("id")}")
+            "approval.resolved" -> append("🛡 approvazione ${json.optString("status")} · #${json.optString("id")}")
+            "tool.call" -> append("🔧 ${json.optString("tool")}")
+            "tool.result" -> append("✅ ${json.optString("tool")} ok=${json.optBoolean("ok")}")
+            "error" -> error = "Agente: " + (json.optString("error").ifEmpty { "errore" }).take(160)
         }
+    }
+
+    private fun append(line: String) {
+        agentLines = agentLines + line
+    }
+
+    private fun finishStreaming() {
+        val index = streamingIndex ?: return
+        messages.getOrNull(index)?.let { current ->
+            messages = messages.toMutableList().also { it[index] = current.copy(streaming = false) }
+        }
+        streamingIndex = null
+    }
+
+    override fun onCleared() {
+        client.close()
+        super.onCleared()
     }
 }
 
 @Composable
-fun ForgeScreen(host: String, model: ForgeViewModel = androidx.lifecycle.viewmodel.compose.viewModel()) {
-    LaunchedEffect(host) { model.refresh(host) }
+fun ForgeScreen(
+    host: String,
+    token: String,
+    model: ForgeViewModel = viewModel(key = "forge|$host|$token")
+) {
     val listState = rememberLazyListState()
     LaunchedEffect(model.messages.size) {
         if (model.messages.isNotEmpty()) listState.animateScrollToItem(model.messages.size - 1)
@@ -226,80 +258,105 @@ fun ForgeScreen(host: String, model: ForgeViewModel = androidx.lifecycle.viewmod
     var chatInput by remember { mutableStateOf("") }
     var agentInput by remember { mutableStateOf("") }
 
-    MaterialTheme(colorScheme = darkColorScheme(background = FInk, surface = FPanel, primary = FMint)) {
-        Column(Modifier.fillMaxSize().imePadding()) {
-            // ── plan + tasks summary ──
-            Column(
-                Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 18.dp, vertical = 10.dp)
-            ) {
-                Text("SPARKFORGE · COMANDO DGX", color = FTextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                if (model.planGoal.isNotBlank()) {
-                    Text(model.planGoal, color = FTextMain, fontSize = 13.sp, maxLines = 1, modifier = Modifier.padding(top = 4.dp))
-                    val done = model.planSteps.count { it.done }
-                    Text("PLAN · $done/${model.planSteps.size} step", color = FMint, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-                val open = model.tasks.count { it.status != "done" }
+    Column(Modifier.fillMaxSize().imePadding()) {
+        // ── header: run banner + plan status ──
+        Column(Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 18.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (open > 0) "TASKS · $open da fare" else "TASKS · tutto chiuso",
-                    color = if (open > 0) FAmber else FMint, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                    "SPARKFORGE · SSE LIVE",
+                    color = FTextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp,
+                    modifier = Modifier.weight(1f)
                 )
-                model.error?.let { Text(it, color = FCoral, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)) }
+                Text(
+                    when {
+                        model.busy -> "STREAMING"
+                        else -> "IDLE"
+                    },
+                    color = if (model.busy) FMint else FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                )
             }
+            if (model.banner.isNotBlank()) Text(model.banner, color = FBlue, fontSize = 11.sp)
+            model.error?.let { Text(it, color = FCoral, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)) }
+        }
 
-            // ── transcript ──
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(model.messages) { msg ->
-                    ForgeBubble(msg)
+        // ── transcript ──
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(model.messages) { message -> ForgeBubble(message) }
+            if (model.liveThinking.isNotBlank()) {
+                item {
+                    Text(
+                        "🧠 ${model.liveThinking.takeLast(600)}",
+                        color = FViolet, fontSize = 11.sp
+                    )
                 }
-                if (model.busy) {
-                    item { Text("… SparkForge sta pensando", color = FTextMuted, fontSize = 12.sp, modifier = Modifier.padding(6.dp)) }
+            }
+        }
+
+        // ── agent trace (thought → action → observation) ──
+        if (model.agentLines.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = 160.dp).background(FPanel)
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text("AGENTE · TRACE LIVE", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                LazyColumn(Modifier.fillMaxWidth().padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    items(model.agentLines) { line ->
+                        Text(line, color = FTextMuted, fontSize = 11.sp)
+                    }
                 }
             }
+        }
 
-            // ── agent bar ──
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = agentInput,
-                    onValueChange = { agentInput = it },
-                    label = { Text("Obiettivo agente ⚡") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    enabled = !model.busy
-                )
-                Button(
-                    onClick = { model.runAgent(host, agentInput.trim()); agentInput = "" },
-                    enabled = !model.busy && agentInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = FViolet, contentColor = FInk)
-                ) { Text("⚡") }
-            }
+        // ── agent bar ──
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = agentInput,
+                onValueChange = { agentInput = it },
+                label = { Text("Obiettivo agente ⚡") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                enabled = !model.busy
+            )
+            Button(
+                onClick = { model.runAgent(host, token, agentInput.trim()); agentInput = "" },
+                enabled = !model.busy && agentInput.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = FViolet, contentColor = FInk)
+            ) { Text("⚡") }
+        }
 
-            // ── chat bar ──
-            Row(
-                Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 14.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = chatInput,
-                    onValueChange = { chatInput = it },
-                    label = { Text("Messaggio a SparkForge") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    enabled = !model.busy
-                )
+        // ── chat bar ──
+        Row(
+            Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = chatInput,
+                onValueChange = { chatInput = it },
+                label = { Text("Messaggio a SparkForge") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                enabled = !model.busy
+            )
+            if (model.busy) {
                 Button(
-                    onClick = { model.send(host, chatInput.trim()); chatInput = "" },
-                    enabled = !model.busy && chatInput.isNotBlank()
+                    onClick = { model.stop() },
+                    colors = ButtonDefaults.buttonColors(containerColor = FCoral, contentColor = FInk)
+                ) { Text("STOP", fontSize = 12.sp) }
+            } else {
+                Button(
+                    onClick = { model.sendChat(host, token, chatInput.trim()); chatInput = "" },
+                    enabled = chatInput.isNotBlank()
                 ) { Text("SEND") }
             }
         }
@@ -307,33 +364,39 @@ fun ForgeScreen(host: String, model: ForgeViewModel = androidx.lifecycle.viewmod
 }
 
 @Composable
-private fun ForgeBubble(msg: ForgeMessage) {
-    val isYou = msg.role == "you"
-    val accent = when {
-        isYou -> FBlue
-        msg.role == "system" -> FTextMuted
-        else -> FMint
-    }
+private fun ForgeBubble(message: ForgeMessage) {
+    val isYou = message.role == "you"
     Column(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalAlignment = if (isYou) Alignment.End else Alignment.Start
     ) {
         Text(
-            if (isYou) "TU" else if (msg.role == "system") "· · ·" else "SPARKFORGE",
+            if (isYou) "TU" else if (message.role == "system") "· · ·" else "SPARKFORGE",
             color = FTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
         )
         Box(
             Modifier
                 .widthIn(max = 340.dp)
-                .background(if (msg.role == "system") Color.Transparent else FPanel, RoundedCornerShape(14.dp))
+                .background(if (message.role == "system") Color.Transparent else FPanel, RoundedCornerShape(14.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
-                if (!msg.thinking.isNullOrBlank()) {
+                if (!message.thinking.isNullOrBlank()) {
                     Text("🧠 ragionamento", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text(msg.thinking, color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
+                    Text(message.thinking, color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
                 }
-                Text(msg.text, color = if (msg.role == "system") FTextMuted else FTextMain, fontSize = 13.sp)
+                val body = when {
+                    message.text.isNotEmpty() -> message.text
+                    message.streaming -> "…"
+                    else -> ""
+                }
+                if (body.isNotEmpty()) {
+                    Text(
+                        body,
+                        color = if (message.role == "system") FTextMuted else FTextMain,
+                        fontSize = 13.sp
+                    )
+                }
             }
         }
     }

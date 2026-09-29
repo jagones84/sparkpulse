@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,15 +13,27 @@ android {
         applicationId = "com.jagones.sparkpulse"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
+
+        // Build default token from a gitignored properties file; the secret
+        // never lands in the repository (runtime override lives in SharedPreferences).
+        val forgeProps = Properties().apply {
+            runCatching { load(rootProject.file("local.forge.properties").inputStream()) }
+        }
+        val forgeToken = (forgeProps.getProperty("forgeToken") ?: "")
+            .replace("\\", "\\\\").replace("\"", "\\\"")
+        buildConfigField("String", "FORGE_TOKEN", "\"$forgeToken\"")
     }
 
     buildTypes {
         release { isMinifyEnabled = false }
         getByName("debug") { isDebuggable = true }
     }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
