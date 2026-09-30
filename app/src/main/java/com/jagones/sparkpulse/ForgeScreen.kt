@@ -1243,19 +1243,18 @@ fun ForgeScreen(
             if (showConfig) ForgeConfigPanel(host, token, model, onSaveConfig)
         }
 
-        // ── v1.6.3: scrollable page. Toolbar + transcript + agent trace live in a
-        // vertically scrollable column, so the conversation is never pushed off
-        // screen by the secondary panels. The transcript keeps a bounded height
-        // (min/max) so the chat itself stays visible and usable at all times.
+        // ── v1.6.13 (JAG-64): the panels rail is PINNED here — it must NEVER
+        // scroll away. Only the transcript + agent trace below scroll. The
+        // freccetta collapses the panel CONTENT, not the bar itself.
+        ForgeToolbar(model)
+
+        // ── scrollable page: transcript + agent trace ──
         Column(
             Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
         ) {
-            // ── v0.5 toolbar: sessions / tasks / CoT / compact / self ──
-            ForgeToolbar(model)
-
             // ── transcript (main content) ──
             LazyColumn(
                 state = listState,
