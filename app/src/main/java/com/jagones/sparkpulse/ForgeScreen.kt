@@ -1,12 +1,18 @@
 package com.jagones.sparkpulse
 
 import android.content.Context
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -1182,6 +1188,9 @@ fun ForgeScreen(
     var chatInput by rememberSaveable { mutableStateOf("") }
     var agentInput by rememberSaveable { mutableStateOf("") }
     var showConfig by rememberSaveable { mutableStateOf(false) }
+    // v1.6.11 (JAG-62): the tapped tool card opens a lateral detail drawer instead
+    // of expanding inline, so the transcript stays compact.
+    var selectedTool by remember { mutableStateOf<ForgeToolCard?>(null) }
 
     LaunchedEffect(host, token) { model.bind(context, host, token) }
 
@@ -1195,6 +1204,7 @@ fun ForgeScreen(
         }
     }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().imePadding()) {
         // ── header: run banner + plan status ──
         Column(Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 18.dp, vertical = 10.dp)) {
@@ -1270,7 +1280,7 @@ fun ForgeScreen(
                 items(model.messages) { message ->
                     val card = message.tool
                     if (card != null) {
-                        ForgeToolCardView(card)
+                        ForgeToolCardView(card, onOpen = { selectedTool = card })
                     } else {
                         SelectionContainer { ForgeBubble(message) }
                     }
@@ -1378,6 +1388,9 @@ fun ForgeScreen(
                 ) { Text("SEND") }
             }
         }
+    }
+        // v1.6.11 (JAG-62): lateral detail drawer overlay (right edge, arrow to close).
+        ForgeToolDetailDrawer(card = selectedTool, onClose = { selectedTool = null })
     }
 }
 
@@ -1493,61 +1506,115 @@ private fun ForgeBubble(message: ForgeMessage) {
 }
 
 /** v1.6.3 (JAG-55): inline mini-card for a tool call/result, coherent with the run graph.
- *  v1.6.9 (JAG-58d): tap to expand into a full input/output/error inspector. */
+ *  v1.6.11 (JAG-62): stays compact; a tap opens the lateral detail drawer. */
 @Composable
-private fun ForgeToolCardView(card: ForgeToolCard) {
-    var expanded by remember { mutableStateOf(false) }
+private fun ForgeToolCardView(card: ForgeToolCard, onOpen: () -> Unit) {
     val hasDetail = card.args.isNotBlank() || card.result.isNotBlank() || card.error.isNotBlank()
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
             .background(FPanelRaised, RoundedCornerShape(10.dp))
-            .clickable(enabled = hasDetail) { expanded = !expanded }
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .clickable(enabled = hasDetail) { onOpen() }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            when {
+                card.ok == null -> "🔧"
+                card.ok -> "✅"
+                else -> "⛔"
+            },
+            fontSize = 12.sp
+        )
+        Column(Modifier.weight(1f).padding(start = 8.dp)) {
             Text(
-                when {
-                    card.ok == null -> "🔧"
-                    card.ok -> "✅"
-                    else -> "⛔"
-                },
-                fontSize = 12.sp
+                "tool · " + card.tool + (card.exitCode?.let { " · exit $it" } ?: ""),
+                color = FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold
             )
-            Column(Modifier.weight(1f).padding(start = 8.dp)) {
+            val detail = card.summary.ifBlank { card.result }
+            if (detail.isNotBlank()) {
                 Text(
-                    "tool · " + card.tool + (card.exitCode?.let { " · exit $it" } ?: ""),
-                    color = FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                    detail, color = FTextMuted, fontSize = 10.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis
                 )
-                val detail = card.summary.ifBlank { card.result }
-                if (detail.isNotBlank() && !expanded) {
-                    Text(
-                        detail, color = FTextMuted, fontSize = 10.sp,
-                        maxLines = 3, overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            card.backend?.let {
-                Text(it, color = FBlue, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-            }
-            if (hasDetail) {
-                Text(if (expanded) " ▾" else " ▸", color = FTextMuted, fontSize = 11.sp)
             }
         }
-        if (expanded) {
-            SelectionContainer {
-                Column(Modifier.padding(top = 2.dp)) {
-                    if (card.args.isNotBlank()) {
+        card.backend?.let {
+            Text(it, color = FBlue, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        }
+        if (hasDetail) {
+            Text("›", color = FTextMuted, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/** v1.6.11 (JAG-62): lateral drawer with a tool call's input/output/error.
+ *  Slides in from the right edge; closes with the › arrow or a scrim tap. */
+@Composable
+private fun ForgeToolDetailDrawer(card: ForgeToolCard?, onClose: () -> Unit) {
+    // Keep the last shown card so the exit animation still has content to render.
+    var shown by remember { mutableStateOf<ForgeToolCard?>(null) }
+    if (card != null) shown = card
+    AnimatedVisibility(
+        visible = card != null,
+        enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            // scrim — tap anywhere outside the panel to close
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+                    .clickable { onClose() }
+            )
+            val c = shown
+            if (c != null) {
+                Column(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .widthIn(max = 340.dp)
+                        .fillMaxWidth(0.88f)
+                        .background(FPanel)
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            when {
+                                c.ok == null -> "🔧"
+                                c.ok -> "✅"
+                                else -> "⛔"
+                            },
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            "tool · " + c.tool + (c.exitCode?.let { " · exit $it" } ?: ""),
+                            color = FTextMain, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f).padding(start = 8.dp)
+                        )
+                        Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                            Text("›", color = FTextMuted, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    c.backend?.let {
+                        Text(it, color = FBlue, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                    if (c.args.isNotBlank()) {
                         ToolFieldLabel("input")
-                        Text(card.args, color = FTextMain, fontSize = 10.sp)
+                        SelectionContainer { Text(c.args, color = FTextMain, fontSize = 10.sp) }
                     }
-                    if (card.result.isNotBlank()) {
+                    if (c.result.isNotBlank()) {
                         ToolFieldLabel("output")
-                        Text(card.result, color = FTextMain, fontSize = 10.sp)
+                        SelectionContainer { Text(c.result, color = FTextMain, fontSize = 10.sp) }
                     }
-                    if (card.error.isNotBlank()) {
+                    if (c.error.isNotBlank()) {
                         ToolFieldLabel("error")
-                        Text(card.error, color = FCoral, fontSize = 10.sp)
+                        SelectionContainer { Text(c.error, color = FCoral, fontSize = 10.sp) }
+                    }
+                    if (c.args.isBlank() && c.result.isBlank() && c.error.isBlank()) {
+                        Text("nessun dettaglio disponibile", color = FTextMuted, fontSize = 10.sp)
                     }
                 }
             }
