@@ -467,6 +467,11 @@ class ForgeViewModel : ViewModel() {
     var modelPickerOpen by mutableStateOf(false)
         private set
 
+    /** v1.6.20: the SparkForge server version (`GET /api/selfcheck`) — shown in the
+     *  header so the app is visibly in sync with the server. */
+    var serverVersion by mutableStateOf("")
+        private set
+
     /** v1.6.3: messages counted server-side for the bound session (`n/d` when none). */
     var contextMessages by mutableStateOf(0)
         private set
@@ -622,6 +627,7 @@ class ForgeViewModel : ViewModel() {
         refreshTasks()
         refreshApprovals()
         refreshProviders()
+        refreshServerVersion()
         startTaskFeed(host, token)
         if (activeSession == null) {
             appContext?.let { ForgeConfig.session(it) }?.let { switchSession(it) }
@@ -929,6 +935,20 @@ class ForgeViewModel : ViewModel() {
                     .getOrDefault(emptyList())
             }
             if (list.isNotEmpty()) providers = list
+        }
+    }
+
+    /** v1.6.20: read the server version so the header proves app↔server alignment. */
+    fun refreshServerVersion() {
+        val host = boundHost
+        val token = boundToken
+        if (host.isBlank()) return
+        viewModelScope.launch {
+            val body = withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, "/api/selfcheck") }.getOrNull()
+            } ?: return@launch
+            val v = runCatching { JSONObject(body).optString("version") }.getOrNull()
+            if (!v.isNullOrBlank()) serverVersion = v
         }
     }
 
@@ -1390,6 +1410,14 @@ fun ForgeScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = FPanelRaised, contentColor = FTextMain)
                 ) { Text("⚙", fontSize = 12.sp) }
             }
+            // v1.6.20: show the running BUILD identity so it is never ambiguous
+            // which app version (and which server) you are looking at.
+            Text(
+                "app v" + BuildConfig.VERSION_NAME +
+                    (if (model.serverVersion.isNotBlank()) " · server v" + model.serverVersion
+                     else " · server ?"),
+                color = FTextMuted, fontSize = 10.sp, letterSpacing = 1.sp
+            )
             model.coldStart?.let {
                 Text(
                     "⏳ $it — prima risposta possibile entro qualche minuto, attendi senza inviare.",
