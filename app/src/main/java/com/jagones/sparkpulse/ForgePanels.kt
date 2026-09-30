@@ -67,9 +67,16 @@ fun ForgeToolbar(model: ForgeViewModel) {
             if (graphTodo > 0) {
                 Text("🧩 $graphTodo", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
+            val pct = if (model.contextPct > 0f) " · ${model.contextPct.toInt()}%" else ""
             Text(
-                if (!ctxReady) "ctx n/d" else "ctx ${model.contextUsed}/${model.contextBudget}",
-                color = if (ctxReady && model.contextOver) FCoral else FMint,
+                if (!ctxReady) "ctx n/d" else
+                    "ctx ${fmtTokens(model.contextUsed)}/${fmtTokens(model.contextBudget)}$pct",
+                color = when {
+                    !ctxReady -> FTextMuted
+                    model.contextOver -> FCoral
+                    model.contextNearLimit -> FAmber
+                    else -> FMint
+                },
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -119,6 +126,10 @@ fun ForgeToolbar(model: ForgeViewModel) {
         }
     }
 }
+
+/** v1.6.16 (JAG-70): compact token count for the ctx indicator (258048 → 258k). */
+private fun fmtTokens(n: Int): String =
+    if (n >= 10000) "%.0fk".format(n / 1000.0) else n.toString()
 
 /** v1.6.11 (JAG-62): one row of the lateral rail nav column. */
 @Composable
@@ -184,8 +195,16 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 )
             }
             Text(
-                "usati ${model.contextUsed} / $budget token" + if (model.contextOver) " · sopra soglia" else "",
-                color = if (model.contextOver) FCoral else FTextMuted, fontSize = 11.sp,
+                "usati ${fmtTokens(model.contextUsed)} / ${fmtTokens(budget)} token" +
+                    (if (model.contextPct > 0f) " · ${model.contextPct.toInt()}%" else "") +
+                    (if (model.contextNearLimit && !model.contextOver)
+                        " · auto-compact al ${model.contextThreshold.toInt()}%" else "") +
+                    (if (model.contextOver) " · sopra soglia" else ""),
+                color = when {
+                    model.contextOver -> FCoral
+                    model.contextNearLimit -> FAmber
+                    else -> FTextMuted
+                }, fontSize = 11.sp,
                 modifier = Modifier.padding(top = 4.dp)
             )
         }

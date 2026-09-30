@@ -400,12 +400,22 @@ class ForgeViewModel : ViewModel() {
     var approvalNotice by mutableStateOf<String?>(null)
         private set
 
-    /** Token indicator fed by `GET /api/context` (v1.6.3: real session values). */
+    /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
+     *  v1.6.16 (JAG-70): `used` is the EFFECTIVE prompt size the server really
+     *  sends (system prompt + transcript), not just the stored transcript. */
     var contextUsed by mutableStateOf(0)
         private set
     var contextBudget by mutableStateOf(0)
         private set
     var contextOver by mutableStateOf(false)
+        private set
+
+    /** JAG-70: percentage of the real budget in use + the auto-compact threshold. */
+    var contextPct by mutableStateOf(0f)
+        private set
+    var contextThreshold by mutableStateOf(0f)
+        private set
+    var contextNearLimit by mutableStateOf(false)
         private set
 
     /** v1.6.3: messages counted server-side for the bound session (`n/d` when none). */
@@ -860,6 +870,9 @@ class ForgeViewModel : ViewModel() {
             contextUsed = 0
             contextBudget = 0
             contextOver = false
+            contextPct = 0f
+            contextThreshold = 0f
+            contextNearLimit = false
             contextMessages = 0
             contextAvailable = false
             return
@@ -875,6 +888,9 @@ class ForgeViewModel : ViewModel() {
                 contextBudget = if (available) j.optInt("budget_tokens") else 0
                 contextMessages = if (available) j.optInt("messages") else 0
                 contextOver = available && j.optBoolean("over_budget")
+                contextPct = if (available) j.optDouble("pct", 0.0).toFloat() else 0f
+                contextThreshold = j.optDouble("auto_compact_pct", 0.0).toFloat()
+                contextNearLimit = available && j.optBoolean("over_threshold")
             }
         }
     }
@@ -979,6 +995,15 @@ class ForgeViewModel : ViewModel() {
                     }
                     "session.created", "session.deleted" -> refreshSessions()
                     "context.compact" -> refreshContext()
+                    "context.built" -> {
+                        // JAG-70: live, authoritative prompt size for this turn.
+                        event.json()?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
+                    }
+                    "context.auto_compact" -> {
+                        statusMessage = "auto-compaction: contesto oltre il " +
+                            "${event.json()?.optDouble("threshold")?.toInt() ?: 75}%"
+                        refreshContext()
+                    }
                 }
             }
         }
