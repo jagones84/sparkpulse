@@ -1,5 +1,10 @@
 package com.jagones.sparkpulse
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -42,38 +47,26 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 fun ForgeToolbar(model: ForgeViewModel) {
-    // v1.6.4 (JAG-57): rememberSaveable — these flags used to reset on
-    // recomposition/rotation, so the SESSIONI menu vanished by itself.
+    // v1.6.11 (JAG-62): the chip row became a LATERAL collapsible bar — the
+    // panels no longer push the transcript down; a freccetta expands/collapses
+    // the whole side rail (nav column + panel).
+    var railOpen by rememberSaveable { mutableStateOf(false) }
     var sessionsOpen by rememberSaveable { mutableStateOf(false) }
     var compactOpen by rememberSaveable { mutableStateOf(false) }
     val graphTodo = model.graphNodes.count { it.status != "done" }
+    val ctxReady = model.contextAvailable && model.contextBudget > 0
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
+        // ── top strip: the freccetta + the always-useful context meter ──
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            ForgeChip(if (sessionsOpen) "▾ SESSIONI" else "▸ SESSIONI", active = sessionsOpen) {
-                sessionsOpen = !sessionsOpen
-                if (sessionsOpen) model.refreshSessions()
+            ForgeChip(if (railOpen) "‹ PANNELLI" else "› PANNELLI", active = railOpen) {
+                railOpen = !railOpen
+                if (railOpen) model.refreshSessions()
             }
-            ForgeChip(
-                "🧩 GRAFO $graphTodo",
-                active = model.graphOpen
-            ) { model.toggleGraph() }
-            ForgeChip("🗜 COMPACTION", active = compactOpen) {
-                compactOpen = !compactOpen
-                if (compactOpen) model.refreshContext()
-            }
-            ForgeChip("🧠 CoT", active = model.cotOpen) { model.toggleCot() }
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(top = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            ForgeChip("🧭 Dove sei", active = model.selfOpen) { model.toggleSelf() }
             Spacer(Modifier.weight(1f))
-            // v1.6.3 (JAG-55): real values only. Without a session the /api/context
-            // numbers are meaningless ("budget 6000 / 0 messages") → show n/d.
-            val ctxReady = model.contextAvailable && model.contextBudget > 0
+            if (graphTodo > 0) {
+                Text("🧩 $graphTodo", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
             Text(
                 if (!ctxReady) "ctx n/d" else "ctx ${model.contextUsed}/${model.contextBudget}",
                 color = if (ctxReady && model.contextOver) FCoral else FMint,
@@ -89,11 +82,62 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 }
             }
         }
-        if (sessionsOpen) ForgeSessionsPanel(model) { sessionsOpen = false }
-        if (model.graphOpen) ForgeGraphPanel(model) { model.toggleGraph() }
-        if (compactOpen) ForgeCompactPanel(model) { compactOpen = false }
-        if (model.cotOpen) ForgeCotDrawer(model)
-        if (model.selfOpen) ForgeSelfPanel(model)
+        // ── lateral collapsible bar: nav column on the left, panel on the right ──
+        AnimatedVisibility(
+            visible = railOpen,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.width(126.dp)) {
+                    ForgeRailItem("SESSIONI", sessionsOpen) {
+                        sessionsOpen = !sessionsOpen
+                        if (sessionsOpen) model.refreshSessions()
+                    }
+                    ForgeRailItem("🧩 GRAFO $graphTodo", model.graphOpen) { model.toggleGraph() }
+                    ForgeRailItem("🗜 COMPACTION", compactOpen) {
+                        compactOpen = !compactOpen
+                        if (compactOpen) model.refreshContext()
+                    }
+                    ForgeRailItem("🧠 CoT", model.cotOpen) { model.toggleCot() }
+                    ForgeRailItem("🧭 Dove sei", model.selfOpen) { model.toggleSelf() }
+                }
+                Column(Modifier.weight(1f)) {
+                    when {
+                        sessionsOpen -> ForgeSessionsPanel(model) { sessionsOpen = false }
+                        model.graphOpen -> ForgeGraphPanel(model) { model.toggleGraph() }
+                        compactOpen -> ForgeCompactPanel(model) { compactOpen = false }
+                        model.cotOpen -> ForgeCotDrawer(model)
+                        model.selfOpen -> ForgeSelfPanel(model)
+                        else -> Text(
+                            "Scegli un pannello a sinistra.",
+                            color = FTextMuted, fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** v1.6.11 (JAG-62): one row of the lateral rail nav column. */
+@Composable
+private fun ForgeRailItem(label: String, active: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp)
+            .background(if (active) FPanel else FPanelRaised, RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            color = if (active) FMint else FTextMain,
+            fontSize = 11.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
 
