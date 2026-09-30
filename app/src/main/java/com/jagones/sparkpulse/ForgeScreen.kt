@@ -1492,16 +1492,6 @@ fun ForgeScreen(
                     }
                 }
             }
-            if (!atBottom && model.messages.isNotEmpty()) {
-                Box(
-                    Modifier.align(Alignment.BottomEnd).padding(14.dp)
-                        .background(FMint, RoundedCornerShape(999.dp))
-                        .clickable {
-                            scope.launch { listState.animateScrollToItem(lastItem.coerceAtLeast(0)) }
-                        }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) { Text("⌄ ultimo", color = FInk, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-            }
             }
 
             // ── agent trace (thought → action → observation), collapsible ──
@@ -1598,6 +1588,24 @@ fun ForgeScreen(
             }
         }
     }
+        // ── v1.6.22 (JAG-77): PERSISTENT "jump to latest" pill ──
+        // Anchored to the SCREEN (not the scrolling transcript), so it never
+        // vanishes when the user taps elsewhere or while the model streams.
+        // Bright when scrolled away from the last message, muted when at bottom.
+        if (model.messages.isNotEmpty()) {
+            Box(
+                Modifier.align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 150.dp)
+                    .background(if (atBottom) FPanelRaised else FMint, RoundedCornerShape(999.dp))
+                    .clickable {
+                        scope.launch { listState.animateScrollToItem(lastItem.coerceAtLeast(0)) }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text("⌄ ultimo", color = if (atBottom) FTextMuted else FInk,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+        }
         // v1.6.11 (JAG-62): lateral detail drawer overlay (right edge, arrow to close).
         ForgeToolDetailDrawer(card = selectedTool, onClose = { selectedTool = null })
     }
