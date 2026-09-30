@@ -33,9 +33,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -1180,9 +1182,22 @@ fun ForgeScreen(
     model: ForgeViewModel = viewModel(key = "forge|$host|$token")
 ) {
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    // v1.6.14 (JAG-67): follow new messages only while the user is already at the
+    // bottom (like every modern chat). If they scrolled up, we stop yanking the
+    // view and instead show a "jump to latest" pill.
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            last >= info.totalItemsCount - 1
+        }
+    }
     LaunchedEffect(model.messages.size) {
-        if (model.messages.isNotEmpty()) listState.animateScrollToItem(model.messages.size - 1)
+        if (model.messages.isNotEmpty() && atBottom) {
+            listState.animateScrollToItem(model.messages.size - 1)
+        }
     }
     // v1.6.4 (JAG-57): saveable across recomposition/rotation.
     var chatInput by rememberSaveable { mutableStateOf("") }
@@ -1256,6 +1271,7 @@ fun ForgeScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             // ── transcript (main content) ──
+            Box(Modifier.fillMaxWidth()) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -1292,6 +1308,17 @@ fun ForgeScreen(
                         )
                     }
                 }
+            }
+            if (!atBottom && model.messages.isNotEmpty()) {
+                Box(
+                    Modifier.align(Alignment.BottomEnd).padding(14.dp)
+                        .background(FMint, RoundedCornerShape(999.dp))
+                        .clickable {
+                            scope.launch { listState.animateScrollToItem(model.messages.size - 1) }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) { Text("⌄ ultimo", color = FInk, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+            }
             }
 
             // ── agent trace (thought → action → observation), collapsible ──
@@ -1406,9 +1433,6 @@ private fun ForgeAgentTrace(model: ForgeViewModel) {
                     (if (model.traceOpen) "▾ " else "▸ ") + "AGENTE · TRACE LIVE",
                     color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
                 )
-            }
-            Box(Modifier.clickable { model.toggleTrace() }.padding(6.dp)) {
-                Text(if (model.traceOpen) "✕" else "▸", color = FTextMuted, fontSize = 12.sp)
             }
         }
         if (model.traceOpen) {
