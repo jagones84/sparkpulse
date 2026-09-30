@@ -565,9 +565,14 @@ class ForgeViewModel : ViewModel() {
         val token = boundToken
         if (host.isEmpty()) return
         viewModelScope.launch {
-            val list = runCatching {
-                parseForgeApprovals(rest.text(host, token, "/api/approvals?status=pending&limit=50"))
-            }.getOrDefault(emptyList())
+            // v1.6.10 (JAG-58c fix): the REST call MUST run off the main thread,
+            // otherwise Android throws NetworkOnMainThreadException and the
+            // queue stays empty — which is exactly why the banner never showed.
+            val list = withContext(Dispatchers.IO) {
+                runCatching {
+                    parseForgeApprovals(rest.text(host, token, "/api/approvals?status=pending&limit=50"))
+                }.getOrDefault(emptyList())
+            }
             pendingApprovals = list
         }
     }
@@ -581,11 +586,16 @@ class ForgeViewModel : ViewModel() {
         if (host.isEmpty() || id.isEmpty()) return
         approvalNotice = if (decision == "approve") "Invio approvazione…" else "Invio rifiuto…"
         viewModelScope.launch {
-            val ok = runCatching {
-                rest.text(host, token, "/api/approvals/$id", "POST",
-                    JSONObject().put("decision", decision).put("by", "forge-ui").toString())
-                true
-            }.getOrDefault(false)
+            // v1.6.10 (JAG-58c fix): POST off the main thread — a network call
+            // on Main throws NetworkOnMainThreadException, so the Approve/Deny
+            // tap would silently do nothing.
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/approvals/$id", "POST",
+                        JSONObject().put("decision", decision).put("by", "forge-ui").toString())
+                    true
+                }.getOrDefault(false)
+            }
             approvalNotice = if (ok) "Decisione inviata" else "Errore invio decisione"
             refreshApprovals()
         }
