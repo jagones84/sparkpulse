@@ -513,8 +513,14 @@ class ForgeViewModel : ViewModel() {
         )
     }
 
-    /** Drops the socket and cancels the current SSE stream (chat or agent). */
+    /**
+     * Drops the socket and cancels the current SSE stream (chat or agent).
+     * v1.6.15 (JAG-68): it also STOPS the tool subprocess still running for this
+     * session on the server (`POST /api/tools/cancel`), so a long shell/MCP job
+     * is actually killed and not just the socket.
+     */
     fun stop() {
+        cancelRunningTool()
         client.close()
         streamJob?.cancel()
         streamJob = null
@@ -522,6 +528,22 @@ class ForgeViewModel : ViewModel() {
         busy = false
         liveThinking = ""
         stopApprovalPoll()
+    }
+
+    /** JAG-68: kill the server-side tool job bound to the active session. */
+    private fun cancelRunningTool() {
+        val host = boundHost
+        val token = boundToken
+        val sid = sessionId ?: activeSession
+        if (host.isBlank() || sid.isNullOrBlank()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools/cancel", "POST",
+                              jsonBody = JSONObject().put("run_id", sid).toString())
+                }
+            }
+        }
     }
 
     // ── v0.5: sessions, context/compaction, tasks feed, self-knowledge ──
