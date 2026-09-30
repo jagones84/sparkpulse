@@ -210,6 +210,9 @@ object ForgeConfig {
     /** v1.6.4 (JAG-57): last selected Forge session id, restored on cold start. */
     private const val KEY_SESSION = "forge_session"
 
+    /** v1.6.17 (JAG-71): the chosen model reference (`provider:model`). */
+    private const val KEY_MODEL = "forge_model"
+
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun host(context: Context): String =
@@ -231,4 +234,12 @@ object ForgeConfig {
 
     fun session(context: Context): String? =
         prefs(context).getString(KEY_SESSION, null)?.takeIf { it.isNotBlank() }
+
+    /** v1.6.17 (JAG-71): persists the selected model reference (empty = server default). */
+    fun saveModel(context: Context, ref: String?) {
+        prefs(context).edit().putString(KEY_MODEL, ref?.takeIf { it.isNotBlank() }).apply()
+    }
+
+    fun model(context: Context): String? =
+        prefs(context).getString(KEY_MODEL, null)?.takeIf { it.isNotBlank() }
 }

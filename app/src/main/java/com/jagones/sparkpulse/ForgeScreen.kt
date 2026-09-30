@@ -133,6 +133,45 @@ internal fun toolCardFromResult(data: JSONObject): ForgeToolCard = ForgeToolCard
 /** One persisted SparkForge session, as returned by `GET /api/sessions` (v0.5). */
 data class ForgeSession(val id: String, val title: String, val messages: Int, val created: Double)
 
+/**
+ * v1.6.17 (JAG-71): one selectable model from the provider catalogue
+ * (`GET /api/providers`). `ref` is the `<provider>:<model>` reference sent to the
+ * server; `loaded` is only meaningful for local servers (null otherwise).
+ */
+data class ForgeModelRef(val id: String, val ref: String, val loaded: Boolean? = null)
+
+/** v1.6.17 (JAG-71): a provider and its models (llama.cpp DGX/Windows, vLLM, OpenRouter, DeepSeek). */
+data class ForgeProvider(
+    val id: String,
+    val name: String,
+    val available: Boolean,
+    val local: Boolean,
+    val models: List<ForgeModelRef>
+)
+
+/** Parses the `{"providers":[...]}` payload of `GET /api/providers`. */
+internal fun parseProviders(body: String): List<ForgeProvider> {
+    val arr = runCatching { JSONObject(body).optJSONArray("providers") }.getOrNull()
+        ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val p = arr.optJSONObject(i) ?: return@mapNotNull null
+        val ms = p.optJSONArray("models") ?: JSONArray()
+        val models = (0 until ms.length()).mapNotNull { j ->
+            val m = ms.optJSONObject(j) ?: return@mapNotNull null
+            ForgeModelRef(
+                id = m.optString("id"),
+                ref = m.optString("ref"),
+                loaded = if (m.isNull("loaded")) null else m.optBoolean("loaded")
+            )
+        }
+        ForgeProvider(
+            id = p.optString("id"), name = p.optString("name"),
+            available = p.optBoolean("available", true),
+            local = p.optBoolean("local", false), models = models
+        )
+    }
+}
+
 /** One todo item from the live task breakdown feed (`tasks.update` / `/api/tasks`). */
 data class ForgeTask(val id: String, val title: String, val status: String)
 
@@ -418,6 +457,16 @@ class ForgeViewModel : ViewModel() {
     var contextNearLimit by mutableStateOf(false)
         private set
 
+    /** v1.6.17 (JAG-71): provider/model catalogue (`GET /api/providers`) + the
+     *  user's pick. `selectedModel` is a `<provider>:<model>` ref sent with every
+     *  request; null lets the server use its configured default. */
+    var providers by mutableStateOf(listOf<ForgeProvider>())
+        private set
+    var selectedModel by mutableStateOf<String?>(null)
+        private set
+    var modelPickerOpen by mutableStateOf(false)
+        private set
+
     /** v1.6.3: messages counted server-side for the bound session (`n/d` when none). */
     var contextMessages by mutableStateOf(0)
         private set
@@ -465,6 +514,8 @@ class ForgeViewModel : ViewModel() {
         val query = buildString {
             append("/api/chat/stream?message=").append(URLEncoder.encode(text, "UTF-8"))
             sessionId?.let { append("&session=").append(URLEncoder.encode(it, "UTF-8")) }
+            // v1.6.17 (JAG-71): the user's chosen model (provider:model), if any.
+            selectedModel?.let { append("&model=").append(URLEncoder.encode(it, "UTF-8")) }
         }
         graphGoal = text
         banner = "pianifico…"
@@ -509,7 +560,8 @@ class ForgeViewModel : ViewModel() {
         graphGoal = goal
         banner = "pianifico…"
         startApprovalPoll()
-        val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
+        val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6" +
+            (selectedModel?.let { "&model=" + URLEncoder.encode(it, "UTF-8") } ?: "")
         streamJob = launchStream(host, token, query,
             onOpen = { },
             onEvent = ::handleAgentEvent,
@@ -569,6 +621,7 @@ class ForgeViewModel : ViewModel() {
         refreshContext()
         refreshTasks()
         refreshApprovals()
+        refreshProviders()
         startTaskFeed(host, token)
         if (activeSession == null) {
             appContext?.let { ForgeConfig.session(it) }?.let { switchSession(it) }
@@ -860,6 +913,39 @@ class ForgeViewModel : ViewModel() {
         }
     }
 
+    /**
+     * v1.6.17 (JAG-71): loads the provider/model catalogue for the picker and
+     * restores the persisted choice, so the app can drive ANY configured model
+     * (local llama.cpp DGX/Windows, vLLM, OpenRouter, DeepSeek original).
+     */
+    fun refreshProviders() {
+        val host = boundHost
+        val token = boundToken
+        if (host.isBlank()) return
+        if (selectedModel == null) selectedModel = appContext?.let { ForgeConfig.model(it) }
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) {
+                runCatching { parseProviders(rest.text(host, token, "/api/providers")) }
+                    .getOrDefault(emptyList())
+            }
+            if (list.isNotEmpty()) providers = list
+        }
+    }
+
+    fun toggleModelPicker() {
+        modelPickerOpen = !modelPickerOpen
+        if (modelPickerOpen) refreshProviders()
+    }
+
+    /** Picks the model used by chat + agent (`null` = server default) and persists it. */
+    fun selectModel(ref: String?) {
+        selectedModel = ref
+        appContext?.let { ForgeConfig.saveModel(it, ref) }
+        statusMessage = if (ref.isNullOrBlank()) "modello: default del server"
+        else "modello: $ref"
+        refreshContext()
+    }
+
     /** `GET /api/context` — token usage vs budget for the active session (v1.6.3:
      *  without a session the indicator reads n/d instead of fake defaults). */
     fun refreshContext() {
@@ -878,7 +964,8 @@ class ForgeViewModel : ViewModel() {
             return
         }
         viewModelScope.launch {
-            val path = "/api/context?session=" + URLEncoder.encode(sid, "UTF-8")
+            val path = "/api/context?session=" + URLEncoder.encode(sid, "UTF-8") +
+                (selectedModel?.let { "&model=" + URLEncoder.encode(it, "UTF-8") } ?: "")
             val result = withContext(Dispatchers.IO) { runCatching { rest.text(host, token, path) } }
             result.onSuccess { body ->
                 val j = runCatching { JSONObject(body) }.getOrNull() ?: return@onSuccess

@@ -63,6 +63,11 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 railOpen = !railOpen
                 if (railOpen) model.refreshSessions()
             }
+            // v1.6.17 (JAG-71): one-tap access to the model picker; shows the
+            // short name of the active model (or AUTO = server default).
+            val mdName = model.selectedModel?.substringAfter(':')
+                ?.let { if (it.length > 11) it.take(10) + "…" else it } ?: "AUTO"
+            ForgeChip("🤖 $mdName", active = model.modelPickerOpen) { model.toggleModelPicker() }
             Spacer(Modifier.weight(1f))
             if (graphTodo > 0) {
                 Text("🧩 $graphTodo", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
@@ -101,6 +106,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         sessionsOpen = !sessionsOpen
                         if (sessionsOpen) model.refreshSessions()
                     }
+                    ForgeRailItem("🤖 MODELLO", model.modelPickerOpen) { model.toggleModelPicker() }
                     ForgeRailItem("🧩 GRAFO $graphTodo", model.graphOpen) { model.toggleGraph() }
                     ForgeRailItem("🗜 COMPACTION", compactOpen) {
                         compactOpen = !compactOpen
@@ -112,6 +118,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 Column(Modifier.weight(1f)) {
                     when {
                         sessionsOpen -> ForgeSessionsPanel(model) { sessionsOpen = false }
+                        model.modelPickerOpen -> ForgeModelPicker(model)
                         model.graphOpen -> ForgeGraphPanel(model) { model.toggleGraph() }
                         compactOpen -> ForgeCompactPanel(model) { compactOpen = false }
                         model.cotOpen -> ForgeCotDrawer(model)
@@ -253,6 +260,75 @@ private fun ForgeSelfPanel(model: ForgeViewModel) {
         Text(
             SELF_GOAL,
             color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+/**
+ * v1.6.17 (JAG-71) — MODEL picker (`GET /api/providers`). Lets the user drive any
+ * configured backend from the phone: local llama.cpp (DGX / Windows), vLLM,
+ * OpenRouter (GLM / DeepSeek flash …) or the original DeepSeek API. The first row
+ * restores the server default so nothing is lost if the catalogue is unavailable.
+ */
+@Composable
+private fun ForgeModelPicker(model: ForgeViewModel) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 320.dp)
+            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "MODELLO · /api/providers", color = FViolet, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { model.toggleModelPicker() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
+        if (model.providers.isEmpty()) {
+            Text(
+                "nessun provider — premi ⟳ per ricaricare dal server",
+                color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
+            )
+        }
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            ModelRow("default del server (auto)", model.selectedModel == null) { model.selectModel(null) }
+            model.providers.forEach { p ->
+                Text(
+                    (if (p.available) "● " else "○ ") + p.name + (if (p.local) " · locale" else ""),
+                    color = if (p.available) FMint else FTextMuted,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                )
+                p.models.forEach { m ->
+                    val suffix = m.loaded?.let { if (it) " · in RAM" else " · non caricato" } ?: ""
+                    ModelRow(m.id + suffix, model.selectedModel == m.ref) { model.selectModel(m.ref) }
+                }
+            }
+        }
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ForgeChip("⟳ ricarica") { model.refreshProviders() }
+            if (model.selectedModel != null) ForgeChip("✕ default") { model.selectModel(null) }
+        }
+    }
+}
+
+/** One selectable row inside [ForgeModelPicker]; selected rows are mint + bold. */
+@Composable
+private fun ModelRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp)
+            .background(if (selected) FPanelRaised else FInk, RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            (if (selected) "◉ " else "○ ") + label,
+            color = if (selected) FMint else FTextMain,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.weight(1f)
         )
     }
 }
