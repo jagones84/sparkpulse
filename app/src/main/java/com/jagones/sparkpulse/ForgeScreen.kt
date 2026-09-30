@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
@@ -33,7 +34,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
@@ -67,10 +71,36 @@ internal const val SELF_GOAL =
 
 /** One chat exchange kept in the Forge transcript. */
 data class ForgeMessage(
-    val role: String, // "you" | "forge" | "system"
+    val role: String, // "you" | "forge" | "system" | "tool"
     val text: String,
     val thinking: String? = null,
-    val streaming: Boolean = false
+    val streaming: Boolean = false,
+    /** v1.6.3 (JAG-55): when set, this transcript entry is an inline tool mini-card. */
+    val tool: ForgeToolCard? = null
+)
+
+/** One tool call/result rendered inline in the chat transcript (v1.6.3). */
+data class ForgeToolCard(
+    val tool: String,
+    val ok: Boolean? = null,
+    val summary: String = "",
+    val exitCode: Int? = null,
+    val backend: String? = null,
+    val result: String = ""
+)
+
+/** Maps a `tool.call` SSE payload to a pending inline card (v1.6.3). */
+internal fun toolCardFromCall(data: JSONObject): ForgeToolCard =
+    ForgeToolCard(tool = data.optString("tool").ifEmpty { "tool" })
+
+/** Maps a `tool.result` SSE payload to a completed inline card (v1.6.3). */
+internal fun toolCardFromResult(data: JSONObject): ForgeToolCard = ForgeToolCard(
+    tool = data.optString("tool").ifEmpty { "tool" },
+    ok = data.optBoolean("ok"),
+    summary = data.optString("summary").take(160),
+    exitCode = if (data.has("exit_code")) data.optInt("exit_code") else null,
+    backend = data.optString("backend").takeIf { it.isNotEmpty() },
+    result = data.optString("stdout").take(240).ifEmpty { data.optString("stderr").take(160) }
 )
 
 /** One persisted SparkForge session, as returned by `GET /api/sessions` (v0.5). */
@@ -162,6 +192,61 @@ internal fun graphActionBody(
     .also { o -> label?.takeIf { it.isNotBlank() }?.let { o.put("label", it) } }
     .also { o -> note?.takeIf { it.isNotBlank() }?.let { o.put("note", it) } }
 
+/**
+ * Splits the tail of a model message into (visible, think). The visible part
+ * is the reply to show as the main chat text; the tail (if any) goes to the
+ * CoT drawer instead of masquerading as the answer.
+ */
+internal fun splitAnswerTail(content: String): Pair<String, String> {
+    val trimmed = content.trimStart()
+    val thinkPrefix = "think: "
+    val separator = "\n$thinkPrefix"
+    if (!trimmed.contains(thinkPrefix)) return content to ""
+    val idx = trimmed.indexOf(separator)
+    if (idx >= 0) {
+        return trimmed.substring(0, idx) to trimmed.substring(idx + separator.length)
+    }
+    // the whole message is reasoning, no visible reply after it
+    return if (trimmed.startsWith(thinkPrefix)) "" to trimmed.removePrefix(thinkPrefix) else content to ""
+}
+
+/** Visible reply part of a persisted message (main chat text). */
+internal fun extractAnswerText(content: String) = splitAnswerTail(content).first
+
+/** Reasoning tail of a persisted message (goes to the CoT drawer). */
+internal fun extractThinkText(content: String) = splitAnswerTail(content).second
+
+/**
+ * v1.6.3 (JAG-55): inserts a pending tool mini-card right before the streaming
+ * reply bubble, so the transcript reads user → tool call → reply (the order in
+ * which the turn actually ran). Returns the new list plus the shifted index of
+ * the streaming bubble.
+ */
+internal fun insertToolCard(
+    messages: List<ForgeMessage>,
+    streamingIndex: Int?,
+    card: ForgeToolCard
+): Pair<List<ForgeMessage>, Int?> {
+    val at = (streamingIndex ?: messages.size).coerceIn(0, messages.size)
+    val out = messages.toMutableList().also {
+        it.add(at, ForgeMessage("tool", "", tool = card))
+    }
+    return out to streamingIndex?.let { it + 1 }
+}
+
+/**
+ * v1.6.3 (JAG-55): fills the newest still-pending card for `tool` with its
+ * outcome (`tool.result`), or appends it when no call was seen (agent runs).
+ */
+internal fun applyToolResult(messages: List<ForgeMessage>, card: ForgeToolCard): List<ForgeMessage> {
+    val index = messages.indexOfLast { it.tool?.tool == card.tool && it.tool.ok == null }
+    return if (index >= 0) {
+        messages.toMutableList().also { it[index] = it[index].copy(tool = card) }
+    } else {
+        messages + ForgeMessage("tool", "", tool = card)
+    }
+}
+
 /** Rebuilds the chat transcript from the `messages` array of `GET /api/history`. */
 internal fun parseHistory(body: String): List<ForgeMessage> {
     val arr = runCatching { JSONObject(body).optJSONArray("messages") }.getOrNull() ?: return emptyList()
@@ -173,7 +258,9 @@ internal fun parseHistory(body: String): List<ForgeMessage> {
             "assistant" -> "forge"
             else -> m.optString("role").ifEmpty { "system" }
         }
-        out += ForgeMessage(role, m.optString("content"), m.optString("reasoning").ifEmpty { null })
+        val src = m.optString("content")
+        val (answer, think) = splitAnswerTail(src)
+        out += ForgeMessage(role, answer, m.optString("reasoning").ifEmpty { think.ifEmpty { null } })
     }
     return out
 }
@@ -239,12 +326,20 @@ class ForgeViewModel : ViewModel() {
     var traceOpen by mutableStateOf(true)
         private set
 
-    /** Token indicator fed by `GET /api/context`. */
+    /** Token indicator fed by `GET /api/context` (v1.6.3: real session values). */
     var contextUsed by mutableStateOf(0)
         private set
     var contextBudget by mutableStateOf(0)
         private set
     var contextOver by mutableStateOf(false)
+        private set
+
+    /** v1.6.3: messages counted server-side for the bound session (`n/d` when none). */
+    var contextMessages by mutableStateOf(0)
+        private set
+
+    /** v1.6.3: false when /api/context has no session to measure → indicator "n/d". */
+    var contextAvailable by mutableStateOf(false)
         private set
 
     /** Live todo breakdown, seeded from `GET /api/tasks` and updated by SSE. */
@@ -298,6 +393,7 @@ class ForgeViewModel : ViewModel() {
         streamJob = launchStream(host, token, query,
             onOpen = { },
             onEvent = ::handleChatEvent,
+            isChat = true,
             onEnd = { failure ->
                 failure?.let { error = "Chat interrotta: ${it.take(140)}" }
                 finishStreaming()
@@ -308,6 +404,10 @@ class ForgeViewModel : ViewModel() {
                 streamJob = null
                 busy = false
                 coldStart = null
+                // v1.6.3 (JAG-55): the first turn creates the session server-side,
+                // so re-read the context with the id we learned from the stream
+                // (n/d before, real numbers now).
+                refreshContext()
             }
         )
     }
@@ -570,22 +670,36 @@ class ForgeViewModel : ViewModel() {
             }
             statusMessage = "Sessione eliminata: $id"
             refreshSessions()
+            // v1.6.3: the indicator must not keep the deleted session's numbers
+            refreshContext()
         }
     }
 
-    /** `GET /api/context` — token usage vs budget for the active session. */
+    /** `GET /api/context` — token usage vs budget for the active session (v1.6.3:
+     *  without a session the indicator reads n/d instead of fake defaults). */
     fun refreshContext() {
         val host = boundHost
         val token = boundToken
         val sid = sessionId
+        if (sid.isNullOrBlank()) {
+            contextUsed = 0
+            contextBudget = 0
+            contextOver = false
+            contextMessages = 0
+            contextAvailable = false
+            return
+        }
         viewModelScope.launch {
-            val path = "/api/context" + (sid?.let { "?session=" + URLEncoder.encode(it, "UTF-8") } ?: "")
+            val path = "/api/context?session=" + URLEncoder.encode(sid, "UTF-8")
             val result = withContext(Dispatchers.IO) { runCatching { rest.text(host, token, path) } }
             result.onSuccess { body ->
                 val j = runCatching { JSONObject(body) }.getOrNull() ?: return@onSuccess
-                contextUsed = j.optInt("tokens_used")
-                contextBudget = j.optInt("budget_tokens")
-                contextOver = j.optBoolean("over_budget")
+                val available = j.optBoolean("available", true)
+                contextAvailable = available
+                contextUsed = if (available) j.optInt("tokens_used") else 0
+                contextBudget = if (available) j.optInt("budget_tokens") else 0
+                contextMessages = if (available) j.optInt("messages") else 0
+                contextOver = available && j.optBoolean("over_budget")
             }
         }
     }
@@ -701,7 +815,8 @@ class ForgeViewModel : ViewModel() {
         path: String,
         onOpen: () -> Unit,
         onEvent: (SseEvent) -> Unit,
-        onEnd: (String?) -> Unit
+        onEnd: (String?) -> Unit,
+        isChat: Boolean = false
     ): Job {
         val channel = Channel<SseEvent>(Channel.UNLIMITED)
         val producer = viewModelScope.launch(Dispatchers.IO) {
@@ -732,6 +847,7 @@ class ForgeViewModel : ViewModel() {
                         // the UI state now and drop the socket, without waiting
                         // for an EOF the server may never send.
                         if (isTerminalSseEvent(event.type)) {
+                            if (isChat) promoteThinkToReply()
                             terminal = true
                             break
                         }
@@ -748,6 +864,14 @@ class ForgeViewModel : ViewModel() {
     }
 
     private fun handleChatEvent(event: SseEvent) {
+        // v1.6.3 (JAG-55): the first turn of a session is created server-side and
+        // its id is only carried by the SSE payloads. Capture it from ANY event
+        // (chat.run graph/tool/delta/done) so the context indicator queries
+        // /api/context with the real session instead of showing 6000/0.
+        event.json()?.optString("session")?.takeIf { it.isNotEmpty() }?.let {
+            sessionId = it
+            activeSession = it
+        }
         when (event.type) {
             "model.loading" -> coldStart = "LLM in avvio… (" +
                 event.json()?.optString("model").orEmpty().ifEmpty { "caricamento" } + ")"
@@ -796,8 +920,30 @@ class ForgeViewModel : ViewModel() {
                 }
                 messages = messages.toMutableList().also { it[index] = updated }
             }
+            "tool.call" -> event.json()?.let(::addToolCard)
+            "tool.result" -> event.json()?.let(::updateToolCard)
             "error" -> error = "Chat: " + (event.json()?.optString("error") ?: "errore").take(160)
         }
+    }
+
+    /**
+     * v1.6.3 (JAG-55): a `tool.call` becomes an inline mini-card inserted right
+     * before the streaming reply bubble, so the transcript reads like the run
+     * itself — user → tool call (+outcome) → reply — and stays coherent with the
+     * task-graph nodes the very same call produced.
+     */
+    private fun addToolCard(json: JSONObject?) {
+        val data = json ?: return
+        val (list, shifted) = insertToolCard(messages, streamingIndex, toolCardFromCall(data))
+        messages = list
+        // the reply bubble moved one slot down: keep streaming deltas on it
+        streamingIndex = shifted
+    }
+
+    /** v1.6.3 (JAG-55): `tool.result` fills the pending card with its outcome. */
+    private fun updateToolCard(json: JSONObject?) {
+        val data = json ?: return
+        messages = applyToolResult(messages, toolCardFromResult(data))
     }
 
     private fun handleAgentEvent(event: SseEvent) {
@@ -847,6 +993,23 @@ class ForgeViewModel : ViewModel() {
             messages = messages.toMutableList().also { it[index] = current.copy(streaming = false) }
         }
         streamingIndex = null
+    }
+
+    /**
+     * v1.6.3 (JAG-55): at the end of a chat stream, if the model produced only
+     * reasoning and no visible answer, promote the reasoning tail to the main
+     * text (the CoT drawer keeps a copy) so the user always sees a reply and
+     * never a message bubble stuck on "…".
+     */
+    private fun promoteThinkToReply() {
+        val index = streamingIndex ?: return
+        val current = messages.getOrNull(index) ?: return
+        if (current.text.isNotBlank()) return
+        val reply = splitAnswerTail(reasoning).second.ifBlank { reasoning.takeLast(2_000) }
+        if (reply.isBlank()) return
+        messages = messages.toMutableList().also {
+            it[index] = current.copy(text = reply)
+        }
     }
 
     override fun onCleared() {
@@ -941,7 +1104,18 @@ fun ForgeScreen(
                         )
                     }
                 }
-                items(model.messages) { message -> ForgeBubble(message) }
+                // v1.6.3 (JAG-55): the transcript is selectable, so messages can be
+                // copied from the phone (long-press → copy) like in any chat app.
+                // Tool-call mini-cards live in the same list, so they appear in the
+                // exact spot of the turn where the tool actually ran.
+                items(model.messages) { message ->
+                    val card = message.tool
+                    if (card != null) {
+                        ForgeToolCardView(card)
+                    } else {
+                        SelectionContainer { ForgeBubble(message) }
+                    }
+                }
                 if (model.liveThinking.isNotBlank()) {
                     item {
                         Text(
@@ -1059,10 +1233,10 @@ private fun ForgeBubble(message: ForgeMessage) {
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
-                if (!message.thinking.isNullOrBlank()) {
-                    Text("🧠 ragionamento", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    Text(message.thinking, color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(bottom = 4.dp))
-                }
+                // v1.6.3 (JAG-55): the REPLY is the primary text of the bubble;
+                // the reasoning stays in the CoT drawer (a per-message collapsed
+                // "CoT" toggle keeps it reachable without replacing the answer).
+                val clipboard = LocalClipboardManager.current
                 val body = when {
                     message.text.isNotEmpty() -> message.text
                     message.streaming -> "…"
@@ -1075,7 +1249,80 @@ private fun ForgeBubble(message: ForgeMessage) {
                         fontSize = 13.sp
                     )
                 }
+                // v1.6.3 (JAG-55): explicit copy action so a message can be taken
+                // off the phone even when long-press selection is fiddly.
+                val hasThinking = !message.thinking.isNullOrBlank()
+                val canCopy = body.isNotEmpty() && !message.streaming && message.role != "system"
+                // hoisted out of the conditional: a `remember` inside a branch
+                // would desync the slot table when CoT appears mid-stream.
+                var cotExpanded by remember(message) { mutableStateOf(false) }
+                if (canCopy || hasThinking) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        modifier = Modifier.padding(top = if (body.isNotEmpty()) 4.dp else 0.dp)
+                    ) {
+                        if (canCopy) {
+                            Text(
+                                "⧉ copia", color = FBlue, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable {
+                                    clipboard.setText(AnnotatedString(message.text))
+                                }
+                            )
+                        }
+                        if (hasThinking) {
+                            Text(
+                                (if (cotExpanded) "▾ " else "▸ ") + "🧠 CoT",
+                                color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { cotExpanded = !cotExpanded }
+                            )
+                        }
+                    }
+                    if (hasThinking && cotExpanded) {
+                        Text(
+                            message.thinking.orEmpty(), color = FTextMuted, fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
             }
+        }
+    }
+}
+
+/** v1.6.3 (JAG-55): inline mini-card for a tool call/result, coherent with the run graph. */
+@Composable
+private fun ForgeToolCardView(card: ForgeToolCard) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(FPanelRaised, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            when {
+                card.ok == null -> "🔧"
+                card.ok -> "✅"
+                else -> "⛔"
+            },
+            fontSize = 12.sp
+        )
+        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+            Text(
+                "tool · " + card.tool + (card.exitCode?.let { " · exit $it" } ?: ""),
+                color = FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold
+            )
+            val detail = card.summary.ifBlank { card.result }
+            if (detail.isNotBlank()) {
+                Text(
+                    detail, color = FTextMuted, fontSize = 10.sp,
+                    maxLines = 3, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        card.backend?.let {
+            Text(it, color = FBlue, fontSize = 9.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

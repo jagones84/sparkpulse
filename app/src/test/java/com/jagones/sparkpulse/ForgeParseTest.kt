@@ -46,7 +46,75 @@ class ForgeParseTest {
         assertEquals("you", messages[0].role)
         assertNull(messages[0].thinking)
         assertEquals("forge", messages[1].role)
+        // v1.6.3 (JAG-55): the reply is the main text; `reasoning` lands in the
+        // CoT drawer field, never as the primary bubble text.
+        assertEquals("ok", messages[1].text)
         assertEquals("We need to answer", messages[1].thinking)
+    }
+
+    @Test
+    fun splitsThinkTailOutOfReply() {
+        assertEquals("reply text" to "hidden chain", splitAnswerTail("reply text\nthink: hidden chain"))
+        assertEquals("plain reply" to "", splitAnswerTail("plain reply"))
+        assertEquals("" to "only thinking", splitAnswerTail("think: only thinking"))
+    }
+
+    @Test
+    fun mapsInlineToolCards() {
+        // v1.6.3 (JAG-55): tool.call → pending card, tool.result → outcome card.
+        val pending = toolCardFromCall(org.json.JSONObject("""{"tool":"write_todos"}"""))
+        assertEquals("write_todos", pending.tool)
+        assertNull(pending.ok)
+        val done = toolCardFromResult(
+            org.json.JSONObject(
+                """{"tool":"write_todos","ok":true,"exit_code":0,
+                    "backend":"harness","summary":"3 nodi nel task graph"}"""
+            )
+        )
+        assertEquals("write_todos", done.tool)
+        assertEquals(true, done.ok)
+        assertEquals(0, done.exitCode)
+        assertEquals("harness", done.backend)
+        assertEquals("3 nodi nel task graph", done.summary)
+    }
+
+    @Test
+    fun toolCardLandsBeforeTheReplyAndKeepsStreamingIndex() {
+        // v1.6.3 (JAG-55): tool.call arrives before the reply deltas → the card
+        // must sit between the user turn and the streaming bubble.
+        val msgs = listOf(
+            ForgeMessage("you", "domanda"),
+            ForgeMessage("forge", "", streaming = true)
+        )
+        val (after, index) = insertToolCard(
+            msgs, 1, toolCardFromCall(org.json.JSONObject("""{"tool":"write_todos"}"""))
+        )
+        assertEquals(listOf("you", "tool", "forge"), after.map { it.role })
+        assertEquals(2, index) // streaming bubble shifted: deltas keep landing on it
+        assertEquals("write_todos", after[1].tool?.tool)
+        assertNull(after[1].tool?.ok)
+
+        val done = applyToolResult(
+            after,
+            toolCardFromResult(
+                org.json.JSONObject("""{"tool":"write_todos","ok":true,"exit_code":0}""")
+            )
+        )
+        assertEquals(3, done.size) // result fills the pending card, no duplicate
+        assertEquals(true, done[1].tool?.ok)
+        assertEquals(0, done[1].tool?.exitCode)
+    }
+
+    @Test
+    fun toolResultWithoutCallStillRendersACard() {
+        // agent runs may emit tool.result for a tool whose call came earlier
+        val out = applyToolResult(
+            listOf(ForgeMessage("you", "x")),
+            toolCardFromResult(org.json.JSONObject("""{"tool":"fs.edit","ok":false}"""))
+        )
+        assertEquals(2, out.size)
+        assertEquals("fs.edit", out[1].tool?.tool)
+        assertEquals(false, out[1].tool?.ok)
     }
 
     @Test

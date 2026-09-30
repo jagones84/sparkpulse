@@ -68,10 +68,12 @@ fun ForgeToolbar(model: ForgeViewModel) {
         ) {
             ForgeChip("🧭 Dove sei", active = model.selfOpen) { model.toggleSelf() }
             Spacer(Modifier.weight(1f))
-            val budget = if (model.contextBudget > 0) model.contextBudget else 6000
+            // v1.6.3 (JAG-55): real values only. Without a session the /api/context
+            // numbers are meaningless ("budget 6000 / 0 messages") → show n/d.
+            val ctxReady = model.contextAvailable && model.contextBudget > 0
             Text(
-                "ctx ${model.contextUsed}/$budget",
-                color = if (model.contextOver) FCoral else FMint,
+                if (!ctxReady) "ctx n/d" else "ctx ${model.contextUsed}/${model.contextBudget}",
+                color = if (ctxReady && model.contextOver) FCoral else FMint,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -111,22 +113,35 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 Text("✕", color = FTextMuted, fontSize = 14.sp)
             }
         }
-        val budget = if (model.contextBudget > 0) model.contextBudget else 6000
-        val pct = ((model.contextUsed.toFloat() / budget.coerceAtLeast(1)) * 100f).coerceIn(0f, 100f)
-        Box(
-            Modifier.fillMaxWidth().heightIn(min = 8.dp).padding(top = 6.dp)
-                .background(FInk, RoundedCornerShape(999.dp))
-        ) {
+        val budget = if (model.contextBudget > 0) model.contextBudget else 0
+        if (budget <= 0) {
+            Text(
+                "contesto n/d — nessuna sessione attiva (crea o seleziona una sessione)",
+                color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
+            )
+        } else {
+            model.activeSession?.let {
+                Text(
+                    "sessione $it · ${model.contextMessages} messaggi",
+                    color = FBlue, fontSize = 10.sp
+                )
+            }
+            val pct = ((model.contextUsed.toFloat() / budget.coerceAtLeast(1)) * 100f).coerceIn(0f, 100f)
             Box(
-                Modifier.fillMaxWidth(pct / 100f).heightIn(min = 8.dp)
-                    .background(if (model.contextOver) FCoral else FMint, RoundedCornerShape(999.dp))
+                Modifier.fillMaxWidth().heightIn(min = 8.dp).padding(top = 6.dp)
+                    .background(FInk, RoundedCornerShape(999.dp))
+            ) {
+                Box(
+                    Modifier.fillMaxWidth(pct / 100f).heightIn(min = 8.dp)
+                        .background(if (model.contextOver) FCoral else FMint, RoundedCornerShape(999.dp))
+                )
+            }
+            Text(
+                "usati ${model.contextUsed} / $budget token" + if (model.contextOver) " · sopra soglia" else "",
+                color = if (model.contextOver) FCoral else FTextMuted, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
-        Text(
-            "usati ${model.contextUsed} / $budget token" + if (model.contextOver) " · sopra soglia" else "",
-            color = if (model.contextOver) FCoral else FTextMuted, fontSize = 11.sp,
-            modifier = Modifier.padding(top = 4.dp)
-        )
         Button(
             onClick = { model.compactContext() },
             modifier = Modifier.padding(top = 6.dp),
