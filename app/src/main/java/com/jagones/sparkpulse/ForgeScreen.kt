@@ -728,7 +728,9 @@ class ForgeViewModel : ViewModel() {
     /** Opens/closes the graph panel and re-syncs it from the server. */
     fun toggleGraph() {
         graphOpen = !graphOpen
-        graphRunId?.let { refreshGraph(it) }
+        // v1.6.21 (JAG-76): the graph lives under the SESSION key; fall back to the
+        // bound session so the panel is populated even without a fresh chat.run.
+        (graphRunId ?: sessionId ?: activeSession)?.let { refreshGraph(it) }
     }
 
     /** Tap-to-detail: selecting the same node again closes the detail. */
@@ -882,6 +884,7 @@ class ForgeViewModel : ViewModel() {
         val token = boundToken
         sessionId = id
         activeSession = id
+        graphRunId = id  // v1.6.21 (JAG-76): the graph is keyed by the session
         rememberSession()
         reasoning = ""
         viewModelScope.launch {
@@ -894,6 +897,7 @@ class ForgeViewModel : ViewModel() {
                 }
                 statusMessage = "Sessione attiva: $id"
             }.onFailure { statusMessage = "Errore history: ${it.message?.take(120)}" }
+            refreshGraph(id)
             refreshContext()
         }
     }
@@ -1194,18 +1198,26 @@ class ForgeViewModel : ViewModel() {
                     event.json()?.optString("error").orEmpty().ifEmpty { "timeout" }.take(160)
             }
             "chat.run" -> {
-                val rid = event.json()?.optString("run_id").orEmpty()
+                val j = event.json()
+                val rid = j?.optString("run_id").orEmpty()
                 banner = "run $rid"
-                if (rid.isNotEmpty()) {
-                    graphRunId = rid
-                    refreshGraph(rid)
+                // v1.6.21 (JAG-76): the chat task graph is persisted under the
+                // SESSION key, not the ephemeral trace id. Binding the panel to
+                // the trace id made every refresh query an empty graph → the plan
+                // vanished the moment the panel was re-opened. Use the session.
+                val key = j?.optString("session").orEmpty().ifEmpty { sessionId ?: "" }
+                if (key.isNotEmpty()) {
+                    graphRunId = key
+                    refreshGraph(key)
                 }
             }
             "graph.node.added", "graph.node.updated" -> {
                 val j = event.json()
-                parseGraphNode(j?.optJSONObject("node"))?.let {
-                    upsertNode(j?.optString("run").orEmpty(), it)
-                }
+                val key = j?.optString("run_id").orEmpty()
+                    .ifEmpty { j?.optString("session").orEmpty() }
+                    .ifEmpty { j?.optString("run").orEmpty() }
+                    .ifEmpty { graphRunId ?: "" }
+                parseGraphNode(j?.optJSONObject("node"))?.let { upsertNode(key, it) }
             }
             "graph.generated" -> banner = "task graph: ${event.json()?.optInt("nodes") ?: 0} nodi"
             "chat.delta" -> {

@@ -433,7 +433,7 @@ private fun ForgeGraphPanel(model: ForgeViewModel, onClose: () -> Unit) {
         val total = model.graphNodes.size
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "TASK GRAPH · run $runShort · $done/$total done",
+                "TASK GRAPH · sess $runShort · $done/$total done",
                 color = FTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp, modifier = Modifier.weight(1f).padding(bottom = 4.dp)
             )
@@ -444,8 +444,8 @@ private fun ForgeGraphPanel(model: ForgeViewModel, onClose: () -> Unit) {
         GraphActionRow(model)
         if (model.graphNodes.isEmpty()) {
             Text(
-                "Nessun grafo per il run corrente. Invia una richiesta: il modello genera " +
-                    "il grafo (write_todos) e lo aggiorna live.",
+                "Nessun piano ancora. Invia una richiesta: il modello scrive la lista " +
+                    "(write_todos) e la aggiorna live ad ogni step.",
                 color = FTextMuted, fontSize = 11.sp
             )
         } else {
