@@ -26,6 +26,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,8 +42,10 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 fun ForgeToolbar(model: ForgeViewModel) {
-    var sessionsOpen by remember { mutableStateOf(false) }
-    var compactOpen by remember { mutableStateOf(false) }
+    // v1.6.4 (JAG-57): rememberSaveable — these flags used to reset on
+    // recomposition/rotation, so the SESSIONI menu vanished by itself.
+    var sessionsOpen by rememberSaveable { mutableStateOf(false) }
+    var compactOpen by rememberSaveable { mutableStateOf(false) }
     val graphTodo = model.graphNodes.count { it.status != "done" }
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -206,7 +209,7 @@ private fun ForgeChip(label: String, active: Boolean = false, onClick: () -> Uni
 /** Session list/switch/create/delete (`GET/POST/DELETE /api/sessions`, `GET /api/history`). */
 @Composable
 private fun ForgeSessionsPanel(model: ForgeViewModel, onClose: () -> Unit) {
-    var newTitle by remember { mutableStateOf("") }
+    var newTitle by rememberSaveable { mutableStateOf("") }
     Column(
         Modifier.fillMaxWidth().heightIn(max = 280.dp)
             .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)

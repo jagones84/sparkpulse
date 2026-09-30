@@ -207,6 +207,9 @@ object ForgeConfig {
     private const val KEY_HOST = "forge_host"
     private const val KEY_TOKEN = "forge_token"
 
+    /** v1.6.4 (JAG-57): last selected Forge session id, restored on cold start. */
+    private const val KEY_SESSION = "forge_session"
+
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun host(context: Context): String =
@@ -220,4 +223,12 @@ object ForgeConfig {
     fun save(context: Context, host: String, token: String) {
         prefs(context).edit().putString(KEY_HOST, host.trim()).putString(KEY_TOKEN, token.trim()).apply()
     }
+
+    /** v1.6.4 (JAG-57): persists the selected session like host/token. */
+    fun saveSession(context: Context, id: String?) {
+        prefs(context).edit().putString(KEY_SESSION, id?.takeIf { it.isNotBlank() }).apply()
+    }
+
+    fun session(context: Context): String? =
+        prefs(context).getString(KEY_SESSION, null)?.takeIf { it.isNotBlank() }
 }

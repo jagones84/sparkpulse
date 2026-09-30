@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
@@ -81,7 +82,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SparkPulseRoot() {
     val context = LocalContext.current
-    var tab by remember { mutableStateOf(0) }
+    var tab by rememberSaveable { mutableStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         ForgeTabBar(tab) { tab = it }
         Box(Modifier.weight(1f)) {

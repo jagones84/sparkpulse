@@ -1,5 +1,6 @@
 package com.jagones.sparkpulse
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -29,12 +30,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -301,6 +304,25 @@ class ForgeViewModel : ViewModel() {
     private val rest = ForgeRest()
     private var boundHost = ""
     private var boundToken = ""
+
+    /** v1.6.4 (JAG-57): app context used to persist the selected session id. */
+    private var appContext: Context? = null
+
+    fun attach(context: Context) {
+        appContext = context
+    }
+
+    private fun persistSession(id: String?) {
+        appContext?.let { ForgeConfig.saveSession(it, id) }
+    }
+
+    /** v1.6.4 (JAG-57): restores the session persisted in ForgeConfig, if the
+     *  ViewModel has no active session yet (e.g. after process death). */
+    fun restoreSavedSession() {
+        if (sessionId != null) return
+        val saved = appContext?.let { ForgeConfig.session(it) }.orEmpty()
+        if (saved.isNotEmpty()) switchSession(saved)
+    }
     private var tasksSse: SseClient? = null
     private var tasksJob: Job? = null
 
@@ -447,8 +469,10 @@ class ForgeViewModel : ViewModel() {
 
     // ── v0.5: sessions, context/compaction, tasks feed, self-knowledge ──
 
-    /** Binds the panel endpoints to the configured host/token (idempotent). */
-    fun bind(host: String, token: String) {
+    /** Binds the panel endpoints to the configured host/token (idempotent).
+     *  v1.6.4 (JAG-57): also restores the last selected session from prefs. */
+    fun bind(context: Context, host: String, token: String) {
+        appContext = context.applicationContext
         if (boundHost == host && boundToken == token) return
         boundHost = host
         boundToken = token
@@ -456,6 +480,14 @@ class ForgeViewModel : ViewModel() {
         refreshContext()
         refreshTasks()
         startTaskFeed(host, token)
+        if (activeSession == null) {
+            appContext?.let { ForgeConfig.session(it) }?.let { switchSession(it) }
+        }
+    }
+
+    /** v1.6.4 (JAG-57): persists the selected session id in SharedPreferences. */
+    private fun rememberSession() {
+        appContext?.let { ForgeConfig.saveSession(it, sessionId) }
     }
 
     fun toggleCot() {
@@ -624,6 +656,7 @@ class ForgeViewModel : ViewModel() {
                 if (id.isNotEmpty()) {
                     sessionId = id
                     activeSession = id
+                    rememberSession()
                     messages = listOf(ForgeMessage("system", "Nuova sessione $id su SparkForge :$FORGE_PORT."))
                     reasoning = ""
                     statusMessage = "Sessione creata: $id"
@@ -640,6 +673,7 @@ class ForgeViewModel : ViewModel() {
         val token = boundToken
         sessionId = id
         activeSession = id
+        rememberSession()
         reasoning = ""
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -666,6 +700,7 @@ class ForgeViewModel : ViewModel() {
             if (activeSession == id) {
                 sessionId = null
                 activeSession = null
+                rememberSession()
                 messages = listOf(ForgeMessage("system", "Sessione eliminata. Chat senza sessione."))
             }
             statusMessage = "Sessione eliminata: $id"
@@ -871,6 +906,7 @@ class ForgeViewModel : ViewModel() {
         event.json()?.optString("session")?.takeIf { it.isNotEmpty() }?.let {
             sessionId = it
             activeSession = it
+            rememberSession()
         }
         when (event.type) {
             "model.loading" -> coldStart = "LLM in avvio… (" +
@@ -907,6 +943,7 @@ class ForgeViewModel : ViewModel() {
                 json.optString("session").takeIf { it.isNotEmpty() }?.let {
                     sessionId = it
                     activeSession = it
+                    rememberSession()
                 }
                 if (json.optString("channel") == "think") {
                     reasoning = (reasoning + text).takeLast(20_000)
@@ -1027,14 +1064,16 @@ fun ForgeScreen(
     model: ForgeViewModel = viewModel(key = "forge|$host|$token")
 ) {
     val listState = rememberLazyListState()
+    val context = LocalContext.current
     LaunchedEffect(model.messages.size) {
         if (model.messages.isNotEmpty()) listState.animateScrollToItem(model.messages.size - 1)
     }
-    var chatInput by remember { mutableStateOf("") }
-    var agentInput by remember { mutableStateOf("") }
-    var showConfig by remember { mutableStateOf(false) }
+    // v1.6.4 (JAG-57): saveable across recomposition/rotation.
+    var chatInput by rememberSaveable { mutableStateOf("") }
+    var agentInput by rememberSaveable { mutableStateOf("") }
+    var showConfig by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(host, token) { model.bind(host, token) }
+    LaunchedEffect(host, token) { model.bind(context, host, token) }
 
     Column(Modifier.fillMaxSize().imePadding()) {
         // ── header: run banner + plan status ──
