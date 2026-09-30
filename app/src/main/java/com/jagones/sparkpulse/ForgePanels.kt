@@ -66,7 +66,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
             // v1.6.17 (JAG-71): one-tap access to the model picker; shows the
             // short name of the active model (or AUTO = server default).
             val mdName = model.selectedModel?.substringAfter(':')
-                ?.let { if (it.length > 11) it.take(10) + "…" else it } ?: "MODELLO"
+                ?.let { if (it.length > 11) it.take(10) + "…" else it } ?: "AUTO"
             ForgeChip("🤖 $mdName", active = model.modelPickerOpen) { model.toggleModelPicker() }
             Spacer(Modifier.weight(1f))
             if (graphTodo > 0) {
@@ -116,7 +116,6 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         sessionsOpen = !sessionsOpen
                         if (sessionsOpen) model.refreshSessions()
                     }
-                    ForgeRailItem("🤖 MODELLO", model.modelPickerOpen) { model.toggleModelPicker() }
                     ForgeRailItem("🧩 GRAFO $graphTodo", model.graphOpen) { model.toggleGraph() }
                     ForgeRailItem("🗜 COMPACTION", compactOpen) {
                         compactOpen = !compactOpen
@@ -288,11 +287,8 @@ private fun ForgeModelPicker(model: ForgeViewModel) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "MODELLO · /api/providers", color = FViolet, fontSize = 10.sp,
-                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp
             )
-            Box(Modifier.clickable { model.toggleModelPicker() }.padding(6.dp)) {
-                Text("✕", color = FTextMuted, fontSize = 14.sp)
-            }
         }
         if (model.providers.isEmpty()) {
             Text(

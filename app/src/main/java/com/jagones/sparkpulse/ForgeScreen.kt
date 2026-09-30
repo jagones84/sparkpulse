@@ -1321,16 +1321,25 @@ fun ForgeScreen(
     // v1.6.14 (JAG-67): follow new messages only while the user is already at the
     // bottom (like every modern chat). If they scrolled up, we stop yanking the
     // view and instead show a "jump to latest" pill.
+    // v1.6.19 (JAG-74): the old check only required the last item to be PARTIALLY
+    // visible, so during streaming it stayed true and the pill vanished exactly
+    // when it was needed. "At the bottom" now means the last item is FULLY visible.
     val atBottom by remember {
         derivedStateOf {
             val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            last >= info.totalItemsCount - 1
+            val last = info.visibleItemsInfo.lastOrNull()
+                ?: return@derivedStateOf info.totalItemsCount == 0
+            last.index >= info.totalItemsCount - 1 &&
+                (last.offset + last.size) <= info.viewportEndOffset + 8
         }
     }
-    LaunchedEffect(model.messages.size) {
+    // Follow on content growth too: streaming appends to the last message without
+    // changing the item count, so keying only on `size` froze the view.
+    val lastLen = model.messages.lastOrNull()?.text?.length ?: 0
+    val lastItem = model.messages.size - 1 + (if (model.liveThinking.isNotBlank()) 1 else 0)
+    LaunchedEffect(model.messages.size, lastLen, model.liveThinking.length) {
         if (model.messages.isNotEmpty() && atBottom) {
-            listState.animateScrollToItem(model.messages.size - 1)
+            listState.animateScrollToItem(lastItem.coerceAtLeast(0))
         }
     }
     // v1.6.4 (JAG-57): saveable across recomposition/rotation.
@@ -1448,7 +1457,7 @@ fun ForgeScreen(
                     Modifier.align(Alignment.BottomEnd).padding(14.dp)
                         .background(FMint, RoundedCornerShape(999.dp))
                         .clickable {
-                            scope.launch { listState.animateScrollToItem(model.messages.size - 1) }
+                            scope.launch { listState.animateScrollToItem(lastItem.coerceAtLeast(0)) }
                         }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) { Text("⌄ ultimo", color = FInk, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
