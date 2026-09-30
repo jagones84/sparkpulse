@@ -66,7 +66,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
             // v1.6.17 (JAG-71): one-tap access to the model picker; shows the
             // short name of the active model (or AUTO = server default).
             val mdName = model.selectedModel?.substringAfter(':')
-                ?.let { if (it.length > 11) it.take(10) + "…" else it } ?: "AUTO"
+                ?.let { if (it.length > 11) it.take(10) + "…" else it } ?: "MODELLO"
             ForgeChip("🤖 $mdName", active = model.modelPickerOpen) { model.toggleModelPicker() }
             Spacer(Modifier.weight(1f))
             if (graphTodo > 0) {
@@ -94,6 +94,16 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 }
             }
         }
+        // v1.6.17 (JAG-71 fix): the MODEL picker lives OUTSIDE the lateral rail, so
+        // tapping the 🤖 chip always shows it (before it only appeared when the
+        // rail was already open → the chip looked dead).
+        AnimatedVisibility(
+            visible = model.modelPickerOpen,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut()
+        ) {
+            Column(Modifier.padding(top = 8.dp)) { ForgeModelPicker(model) }
+        }
         // ── lateral collapsible bar: nav column on the left, panel on the right ──
         AnimatedVisibility(
             visible = railOpen,
@@ -118,7 +128,6 @@ fun ForgeToolbar(model: ForgeViewModel) {
                 Column(Modifier.weight(1f)) {
                     when {
                         sessionsOpen -> ForgeSessionsPanel(model) { sessionsOpen = false }
-                        model.modelPickerOpen -> ForgeModelPicker(model)
                         model.graphOpen -> ForgeGraphPanel(model) { model.toggleGraph() }
                         compactOpen -> ForgeCompactPanel(model) { compactOpen = false }
                         model.cotOpen -> ForgeCotDrawer(model)
