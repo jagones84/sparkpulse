@@ -49,6 +49,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -82,6 +83,13 @@ data class ForgeMessage(
     val tool: ForgeToolCard? = null
 )
 
+/** v1.6.9 (JAG-58d): renders a JSON value compact-pretty for the tool card. */
+internal fun prettyToolArgs(value: Any?): String = when (value) {
+    null -> ""
+    is JSONObject -> value.toString(2)
+    else -> value.toString()
+}
+
 /** One tool call/result rendered inline in the chat transcript (v1.6.3). */
 data class ForgeToolCard(
     val tool: String,
@@ -89,12 +97,19 @@ data class ForgeToolCard(
     val summary: String = "",
     val exitCode: Int? = null,
     val backend: String? = null,
-    val result: String = ""
+    val result: String = "",
+    // v1.6.9 (JAG-58d): input (args) + error (stderr) so the card can expand
+    // into a full input/output/error inspector.
+    val args: String = "",
+    val error: String = ""
 )
 
 /** Maps a `tool.call` SSE payload to a pending inline card (v1.6.3). */
 internal fun toolCardFromCall(data: JSONObject): ForgeToolCard =
-    ForgeToolCard(tool = data.optString("tool").ifEmpty { "tool" })
+    ForgeToolCard(
+        tool = data.optString("tool").ifEmpty { "tool" },
+        args = prettyToolArgs(data.opt("args"))
+    )
 
 /** Maps a `tool.result` SSE payload to a completed inline card (v1.6.3). */
 internal fun toolCardFromResult(data: JSONObject): ForgeToolCard = ForgeToolCard(
@@ -103,7 +118,8 @@ internal fun toolCardFromResult(data: JSONObject): ForgeToolCard = ForgeToolCard
     summary = data.optString("summary").take(160),
     exitCode = if (data.has("exit_code")) data.optInt("exit_code") else null,
     backend = data.optString("backend").takeIf { it.isNotEmpty() },
-    result = data.optString("stdout").take(240).ifEmpty { data.optString("stderr").take(160) }
+    result = data.optString("stdout"),
+    error = data.optString("stderr")
 )
 
 /** One persisted SparkForge session, as returned by `GET /api/sessions` (v0.5). */
@@ -244,7 +260,11 @@ internal fun insertToolCard(
 internal fun applyToolResult(messages: List<ForgeMessage>, card: ForgeToolCard): List<ForgeMessage> {
     val index = messages.indexOfLast { it.tool?.tool == card.tool && it.tool.ok == null }
     return if (index >= 0) {
-        messages.toMutableList().also { it[index] = it[index].copy(tool = card) }
+        val prev = messages[index].tool
+        // v1.6.9 (JAG-58d): `tool.result` carries no args — keep the input
+        // captured at `tool.call` time so the expanded card stays complete.
+        val merged = if (prev != null) card.copy(args = prev.args.ifEmpty { card.args }) else card
+        messages.toMutableList().also { it[index] = it[index].copy(tool = merged) }
     } else {
         messages + ForgeMessage("tool", "", tool = card)
     }
@@ -273,9 +293,27 @@ internal fun parseHistory(body: String): List<ForgeMessage> {
  * a channel consumed on the main dispatcher, so UI deltas arrive ordered and
  * thread-safe while the blocking socket read happens on IO.
  */
+/** v1.6.5 (JAG-58c): an approval raised by the agent loop, decidable from the
+ *  FORGE tab so a `required` tool no longer hangs the run for 300s. */
+data class ForgeApproval(val id: String, val tool: String, val summary: String, val runId: String?)
+
+internal fun parseForgeApprovals(body: String): List<ForgeApproval> {
+    val array = JSONObject(body).optJSONArray("approvals") ?: return emptyList()
+    return (0 until array.length()).mapNotNull { i ->
+        val item = array.optJSONObject(i) ?: return@mapNotNull null
+        ForgeApproval(
+            id = item.optString("id"),
+            tool = item.optString("tool"),
+            summary = item.optString("summary").ifEmpty { item.optString("reason") },
+            runId = item.optString("run_id").takeIf { it.isNotEmpty() }
+        )
+    }
+}
+
 class ForgeViewModel : ViewModel() {
     private val client = SseClient()
     private var streamJob: Job? = null
+    private var approvalPollJob: Job? = null
 
     var messages by mutableStateOf(
         listOf(
@@ -348,6 +386,12 @@ class ForgeViewModel : ViewModel() {
     var traceOpen by mutableStateOf(true)
         private set
 
+    /** v1.6.5 (JAG-58c): pending approvals from the agent loop, decidable here. */
+    var pendingApprovals by mutableStateOf(listOf<ForgeApproval>())
+        private set
+    var approvalNotice by mutableStateOf<String?>(null)
+        private set
+
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values). */
     var contextUsed by mutableStateOf(0)
         private set
@@ -412,6 +456,7 @@ class ForgeViewModel : ViewModel() {
         error = null
         coldStart = null
         reasoning = ""
+        startApprovalPoll()
         streamJob = launchStream(host, token, query,
             onOpen = { },
             onEvent = ::handleChatEvent,
@@ -426,6 +471,7 @@ class ForgeViewModel : ViewModel() {
                 streamJob = null
                 busy = false
                 coldStart = null
+                stopApprovalPoll()
                 // v1.6.3 (JAG-55): the first turn creates the session server-side,
                 // so re-read the context with the id we learned from the stream
                 // (n/d before, real numbers now).
@@ -444,6 +490,7 @@ class ForgeViewModel : ViewModel() {
         reasoning = ""
         graphGoal = goal
         banner = "pianifico…"
+        startApprovalPoll()
         val query = "/api/agent/run?goal=" + URLEncoder.encode(goal, "UTF-8") + "&max_steps=6"
         streamJob = launchStream(host, token, query,
             onOpen = { },
@@ -453,6 +500,7 @@ class ForgeViewModel : ViewModel() {
                 streamJob = null
                 busy = false
                 liveThinking = ""
+                stopApprovalPoll()
             }
         )
     }
@@ -465,6 +513,7 @@ class ForgeViewModel : ViewModel() {
         finishStreaming()
         busy = false
         liveThinking = ""
+        stopApprovalPoll()
     }
 
     // ── v0.5: sessions, context/compaction, tasks feed, self-knowledge ──
@@ -479,6 +528,7 @@ class ForgeViewModel : ViewModel() {
         refreshSessions()
         refreshContext()
         refreshTasks()
+        refreshApprovals()
         startTaskFeed(host, token)
         if (activeSession == null) {
             appContext?.let { ForgeConfig.session(it) }?.let { switchSession(it) }
@@ -507,6 +557,56 @@ class ForgeViewModel : ViewModel() {
     /** v1.6.3: collapses/expands the live agent trace panel. */
     fun toggleTrace() {
         traceOpen = !traceOpen
+    }
+
+    /** v1.6.5 (JAG-58c): pull the pending approval queue (best-effort). */
+    fun refreshApprovals() {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        viewModelScope.launch {
+            val list = runCatching {
+                parseForgeApprovals(rest.text(host, token, "/api/approvals?status=pending&limit=50"))
+            }.getOrDefault(emptyList())
+            pendingApprovals = list
+        }
+    }
+
+    /** v1.6.5 (JAG-58c): approve/deny a pending approval (chat & agent HITL).
+     *  Without this the FORGE tab could not answer an `approval.request`, so a
+     *  `required` tool blocked the run until the 300s server timeout. */
+    fun decideApproval(id: String, decision: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty() || id.isEmpty()) return
+        approvalNotice = if (decision == "approve") "Invio approvazione…" else "Invio rifiuto…"
+        viewModelScope.launch {
+            val ok = runCatching {
+                rest.text(host, token, "/api/approvals/$id", "POST",
+                    JSONObject().put("decision", decision).put("by", "forge-ui").toString())
+                true
+            }.getOrDefault(false)
+            approvalNotice = if (ok) "Decisione inviata" else "Errore invio decisione"
+            refreshApprovals()
+        }
+    }
+
+    /** v1.6.5 (JAG-58c): polls the approval queue while a run is live, so a
+     *  `required` tool surfaces its Approve/Deny buttons promptly. */
+    private fun startApprovalPoll() {
+        approvalPollJob?.cancel()
+        approvalPollJob = viewModelScope.launch {
+            while (true) {
+                refreshApprovals()
+                delay(2000)
+            }
+        }
+    }
+
+    private fun stopApprovalPoll() {
+        approvalPollJob?.cancel()
+        approvalPollJob = null
+        refreshApprovals()
     }
 
     /** v1.6.3: clears the transient panel feedback line. */
@@ -1075,6 +1175,16 @@ fun ForgeScreen(
 
     LaunchedEffect(host, token) { model.bind(context, host, token) }
 
+    // v1.6.6 (JAG-58c): keep the pending-approval queue fresh for the whole
+    // lifetime of the FORGE screen, not only while a run is streaming, so a
+    // `required` tool always surfaces its Approve/Deny banner.
+    LaunchedEffect(host, token) {
+        while (true) {
+            model.refreshApprovals()
+            delay(3000)
+        }
+    }
+
     Column(Modifier.fillMaxSize().imePadding()) {
         // ── header: run banner + plan status ──
         Column(Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 18.dp, vertical = 10.dp)) {
@@ -1171,6 +1281,44 @@ fun ForgeScreen(
             }
         }
 
+        // ── pending approvals — always visible, above the inputs, so a
+        //    `required` tool never dead-locks the run behind a collapsed
+        //    trace panel (JAG-58c) ──
+        if (model.pendingApprovals.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(FAmber.copy(alpha = 0.12f))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                model.pendingApprovals.forEach { ap ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "🛡 ${ap.tool} · #${ap.id}",
+                                color = FAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                            )
+                            if (ap.summary.isNotBlank()) {
+                                Text(ap.summary, color = FTextMain, fontSize = 11.sp)
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { model.decideApproval(ap.id, "approve") },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = FMint, contentColor = FInk)
+                            ) { Text("APPROVA", fontSize = 11.sp) }
+                            Button(
+                                onClick = { model.decideApproval(ap.id, "deny") },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = FCoral, contentColor = FInk)
+                            ) { Text("NEGA", fontSize = 11.sp) }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── agent bar ──
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
@@ -1251,6 +1399,11 @@ private fun ForgeAgentTrace(model: ForgeViewModel) {
                 }
             }
         }
+        // v1.6.5 (JAG-58c): approvals are surfaced by the always-visible
+        // banner above the input bars, not inside this collapsible trace.
+        model.approvalNotice?.let {
+            Text(it, color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 4.dp))
+        }
     }
 }
 
@@ -1329,39 +1482,75 @@ private fun ForgeBubble(message: ForgeMessage) {
     }
 }
 
-/** v1.6.3 (JAG-55): inline mini-card for a tool call/result, coherent with the run graph. */
+/** v1.6.3 (JAG-55): inline mini-card for a tool call/result, coherent with the run graph.
+ *  v1.6.9 (JAG-58d): tap to expand into a full input/output/error inspector. */
 @Composable
 private fun ForgeToolCardView(card: ForgeToolCard) {
-    Row(
+    var expanded by remember { mutableStateOf(false) }
+    val hasDetail = card.args.isNotBlank() || card.result.isNotBlank() || card.error.isNotBlank()
+    Column(
         Modifier
             .fillMaxWidth()
             .background(FPanelRaised, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .clickable(enabled = hasDetail) { expanded = !expanded }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Text(
-            when {
-                card.ok == null -> "🔧"
-                card.ok -> "✅"
-                else -> "⛔"
-            },
-            fontSize = 12.sp
-        )
-        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "tool · " + card.tool + (card.exitCode?.let { " · exit $it" } ?: ""),
-                color = FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                when {
+                    card.ok == null -> "🔧"
+                    card.ok -> "✅"
+                    else -> "⛔"
+                },
+                fontSize = 12.sp
             )
-            val detail = card.summary.ifBlank { card.result }
-            if (detail.isNotBlank()) {
+            Column(Modifier.weight(1f).padding(start = 8.dp)) {
                 Text(
-                    detail, color = FTextMuted, fontSize = 10.sp,
-                    maxLines = 3, overflow = TextOverflow.Ellipsis
+                    "tool · " + card.tool + (card.exitCode?.let { " · exit $it" } ?: ""),
+                    color = FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold
                 )
+                val detail = card.summary.ifBlank { card.result }
+                if (detail.isNotBlank() && !expanded) {
+                    Text(
+                        detail, color = FTextMuted, fontSize = 10.sp,
+                        maxLines = 3, overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            card.backend?.let {
+                Text(it, color = FBlue, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+            }
+            if (hasDetail) {
+                Text(if (expanded) " ▾" else " ▸", color = FTextMuted, fontSize = 11.sp)
             }
         }
-        card.backend?.let {
-            Text(it, color = FBlue, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        if (expanded) {
+            SelectionContainer {
+                Column(Modifier.padding(top = 2.dp)) {
+                    if (card.args.isNotBlank()) {
+                        ToolFieldLabel("input")
+                        Text(card.args, color = FTextMain, fontSize = 10.sp)
+                    }
+                    if (card.result.isNotBlank()) {
+                        ToolFieldLabel("output")
+                        Text(card.result, color = FTextMain, fontSize = 10.sp)
+                    }
+                    if (card.error.isNotBlank()) {
+                        ToolFieldLabel("error")
+                        Text(card.error, color = FCoral, fontSize = 10.sp)
+                    }
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun ToolFieldLabel(name: String) {
+    Text(
+        name.uppercase(),
+        color = FTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+        letterSpacing = 1.sp,
+        modifier = Modifier.padding(top = 4.dp)
+    )
 }

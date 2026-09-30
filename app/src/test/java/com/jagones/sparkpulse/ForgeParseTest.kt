@@ -118,6 +118,51 @@ class ForgeParseTest {
     }
 
     @Test
+    fun toolCardCapturesInputOutputAndErrorForExpansion() {
+        // v1.6.9 (JAG-58d): the inline card is expandable → it must carry the
+        // tool input (args), output (stdout) and error (stderr).
+        val call = toolCardFromCall(
+            org.json.JSONObject("""{"tool":"shell","args":{"command":"mkdir foo"}}""")
+        )
+        assertEquals("shell", call.tool)
+        assertTrue(call.args.contains("mkdir foo"))
+
+        val done = toolCardFromResult(
+            org.json.JSONObject(
+                """{"tool":"shell","ok":false,"exit_code":1,
+                    "stdout":"partial out","stderr":"permission denied"}"""
+            )
+        )
+        assertEquals("partial out", done.result)
+        assertEquals("permission denied", done.error)
+    }
+
+    @Test
+    fun applyingResultKeepsTheCapturedInput() {
+        // v1.6.9 (JAG-58d): tool.result carries no args — the pending card's
+        // input must survive the merge so the expanded inspector stays complete.
+        val msgs = listOf(
+            ForgeMessage("you", "q"),
+            ForgeMessage(
+                "tool", "",
+                tool = toolCardFromCall(
+                    org.json.JSONObject("""{"tool":"shell","args":{"command":"ls"}}""")
+                )
+            ),
+            ForgeMessage("forge", "", streaming = true)
+        )
+        val out = applyToolResult(
+            msgs,
+            toolCardFromResult(
+                org.json.JSONObject("""{"tool":"shell","ok":true,"stdout":"a b c"}""")
+            )
+        )
+        assertEquals(3, out.size)
+        assertTrue(out[1].tool!!.args.contains("ls"))
+        assertEquals("a b c", out[1].tool!!.result)
+    }
+
+    @Test
     fun handlesMissingArraysGracefully() {
         assertTrue(parseSessions("{}").isEmpty())
         assertTrue(parseTasks("not json").isEmpty())
