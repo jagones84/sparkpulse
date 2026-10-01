@@ -1350,6 +1350,14 @@ class ForgeViewModel : ViewModel() {
     private fun promoteThinkToReply() {
         val index = streamingIndex ?: return
         val current = messages.getOrNull(index) ?: return
+        // JAG-78b: never leave raw tool-call JSON in the bubble. Defensive: the
+        // server no longer streams it, this covers truncated/partial leaks.
+        if (looksLikeJsonAction(current.text)) {
+            messages = messages.toMutableList().also {
+                it[index] = current.copy(text = "(azione eseguita · nessun testo da mostrare)")
+            }
+            return
+        }
         if (current.text.isNotBlank()) return
         val reply = splitAnswerTail(reasoning).second.ifBlank { reasoning.takeLast(2_000) }
         if (reply.isBlank()) return
@@ -1375,6 +1383,16 @@ Comandi disponibili (nella chat, stessa sessione):
   esegue i passi con i tool e aggiorna il grafo, senza chiedere conferma.
 • /help — mostra questo elenco.
 """.trim()
+
+/**
+ * JAG-78b: true when a streamed assistant text is a raw tool-call JSON payload
+ * (`{"action":…}`) that must never be shown to the user as a chat bubble.
+ */
+internal fun looksLikeJsonAction(text: String): Boolean {
+    val t = text.trim()
+    return t.length in 8..4000 && t.startsWith("{") &&
+        (t.contains("\"action\"") || t.contains("\"tool\""))
+}
 
 @Composable
 fun ForgeScreen(
