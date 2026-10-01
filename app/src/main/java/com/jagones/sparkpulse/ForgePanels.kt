@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -121,6 +122,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                     if (keep != "graph" && model.graphOpen) model.toggleGraph()
                     if (keep != "cot" && model.cotOpen) model.toggleCot()
                     if (keep != "self" && model.selfOpen) model.toggleSelf()
+                    if (keep != "settings" && model.settingsOpen) model.toggleSettings()
                 }
                 Column(Modifier.width(126.dp)) {
                     ForgeRailItem("SESSIONI", sessionsOpen) {
@@ -150,6 +152,11 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         closeOthers("self")
                         if (on != model.selfOpen) model.toggleSelf()
                     }
+                    ForgeRailItem("⚙ SETTINGS", model.settingsOpen) {
+                        val on = !model.settingsOpen
+                        closeOthers("settings")
+                        if (on != model.settingsOpen) model.toggleSettings()
+                    }
                 }
                 Column(Modifier.weight(1f)) {
                     when {
@@ -158,6 +165,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         compactOpen -> ForgeCompactPanel(model) { compactOpen = false }
                         model.cotOpen -> ForgeCotDrawer(model)
                         model.selfOpen -> ForgeSelfPanel(model)
+                        model.settingsOpen -> ForgeSettingsPanel(model) { model.toggleSettings() }
                         else -> Text(
                             "Scegli un pannello a sinistra.",
                             color = FTextMuted, fontSize = 11.sp
@@ -255,6 +263,86 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
             modifier = Modifier.padding(top = 6.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
         ) { Text("⇩ Compatta ora", fontSize = 11.sp) }
+    }
+}
+
+/**
+ * v1.6.27 (JAG-81): SETTINGS — per-tool approval policy, right in the panels.
+ * One row per tool with two checkboxes: AUTO (execute without asking) and ON
+ * (tool enabled). Persisted server-side in config/tools.yaml via POST /api/tools,
+ * so the agent stops blocking on tools you have explicitly trusted.
+ */
+@Composable
+private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 260.dp)
+            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "SETTINGS · politiche dei tool", color = FBlue, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
+        Text(
+            "AUTO = esegue senza chiedere approvazione · ON = tool abilitato",
+            color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp)
+        )
+        model.settingsNotice?.let {
+            Text(it, color = FMint, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+        }
+        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(
+                onClick = {
+                    model.setToolPolicy("fs.write", auto = true)
+                    model.setToolPolicy("fs.edit", auto = true)
+                    model.setToolPolicy("shell", auto = true)
+                },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+            ) { Text("⚡ fs+shell AUTO", fontSize = 10.sp) }
+            Button(
+                onClick = { model.refreshTools() },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+            ) { Text("↻ ricarica", fontSize = 10.sp) }
+        }
+        if (model.tools.isEmpty()) {
+            Text(
+                "nessun tool — apri il pannello con il server raggiungibile",
+                color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
+            )
+        } else {
+            LazyColumn(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                items(model.tools) { t ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                t.name,
+                                color = if (t.enabled) FTextMain else FTextMuted,
+                                fontSize = 11.sp, fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "approval=" + t.approval +
+                                    (if (!t.enabled) " · disabilitato" else ""),
+                                color = FTextMuted, fontSize = 9.sp
+                            )
+                        }
+                        Text("AUTO", color = FTextMuted, fontSize = 9.sp)
+                        Checkbox(
+                            checked = t.approval == "auto",
+                            onCheckedChange = { model.setToolPolicy(t.name, auto = it) }
+                        )
+                        Text("ON", color = FTextMuted, fontSize = 9.sp)
+                        Checkbox(
+                            checked = t.enabled,
+                            onCheckedChange = { model.setToolPolicy(t.name, enabled = it) }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 

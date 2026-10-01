@@ -353,6 +353,27 @@ data class ForgeApproval(
     val status: String = "pending"
 )
 
+/** v1.6.27 (JAG-81): one tool policy row for the SETTINGS panel. */
+data class ForgeToolFlag(
+    val name: String,
+    val enabled: Boolean,
+    val approval: String,
+    val description: String
+)
+
+internal fun parseToolFlags(body: String): List<ForgeToolFlag> {
+    val arr = runCatching { JSONObject(body).optJSONArray("tools") }.getOrNull() ?: return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val o = arr.optJSONObject(i) ?: return@mapNotNull null
+        ForgeToolFlag(
+            name = o.optString("name"),
+            enabled = o.optBoolean("enabled"),
+            approval = o.optString("approval").ifEmpty { "required" },
+            description = o.optString("description")
+        )
+    }
+}
+
 internal fun parseForgeApprovals(body: String): List<ForgeApproval> {
     val array = JSONObject(body).optJSONArray("approvals") ?: return emptyList()
     return (0 until array.length()).mapNotNull { i ->
@@ -452,6 +473,14 @@ class ForgeViewModel : ViewModel() {
     /** v1.6.26 (JAG-79): bumped when an inline approval card is added, so the UI
      *  scrolls it into view (an approval must never sit off-screen unnoticed). */
     var approvalPing by mutableStateOf(0)
+        private set
+
+    /** v1.6.27 (JAG-81): per-tool policies shown in the SETTINGS panel. */
+    var tools by mutableStateOf(listOf<ForgeToolFlag>())
+        private set
+    var settingsOpen by mutableStateOf(false)
+        private set
+    var settingsNotice by mutableStateOf<String?>(null)
         private set
 
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
@@ -793,6 +822,53 @@ class ForgeViewModel : ViewModel() {
         if (changed) messages = out
     }
 
+    // ── v1.6.27 (JAG-81): SETTINGS — per-tool approval policy ──
+
+    /** Open/close the SETTINGS panel; opening loads the tool catalog. */
+    fun toggleSettings() {
+        settingsOpen = !settingsOpen
+        if (settingsOpen) {
+            settingsNotice = null
+            refreshTools()
+        }
+    }
+
+    /** `GET /api/tools` — the catalog with enabled/approval per tool. */
+    fun refreshTools() {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        viewModelScope.launch {
+            val list = withContext(Dispatchers.IO) {
+                runCatching { parseToolFlags(rest.text(host, token, "/api/tools")) }
+                    .getOrDefault(emptyList())
+            }
+            // enabled tools first, then alphabetical — the useful ones up top.
+            tools = list.sortedWith(compareBy({ !it.enabled }, { it.name }))
+        }
+    }
+
+    /** `POST /api/tools` — flip a tool's approval policy and/or enabled flag. */
+    fun setToolPolicy(name: String, auto: Boolean? = null, enabled: Boolean? = null) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty() || name.isEmpty()) return
+        val body = JSONObject().put("tool", name)
+        auto?.let { body.put("approval", if (it) "auto" else "required") }
+        enabled?.let { body.put("enabled", it) }
+        settingsNotice = "Salvo $name…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "$name aggiornato" else "Errore su $name"
+            refreshTools()
+        }
+    }
+
     /** v1.6.5 (JAG-58c): approve/deny a pending approval (chat & agent HITL).
      *  Without this the FORGE tab could not answer an `approval.request`, so a
      *  `required` tool blocked the run until the 300s server timeout. */
@@ -800,6 +876,8 @@ class ForgeViewModel : ViewModel() {
         val host = boundHost
         val token = boundToken
         if (host.isEmpty() || id.isEmpty()) return
+        android.util.Log.d("SparkPulse", "decideApproval $id -> $decision\n" +
+            android.util.Log.getStackTraceString(Throwable()))
         approvalNotice = if (decision == "approve") "Invio approvazione…" else "Invio rifiuto…"
         viewModelScope.launch {
             // v1.6.10 (JAG-58c fix): POST off the main thread — a network call
