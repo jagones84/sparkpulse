@@ -1,0 +1,17 @@
+JAG-89: keep the CoT expander alive while streaming (app v1.6.30)
+
+User bug: tapping the chevron on a message while the agent is thinking did
+not open the live reasoning; it only opened after the turn ended.
+
+Cause: ForgeBubble held the CoT expander state in remember(message), but every
+chat.delta copy()s the ForgeMessage, so the state reset on each delta and the
+chevron closed itself mid-stream. It only "worked" once streaming stopped.
+
+Fix:
+- ForgeMessage gains a stable id: Long (atomic counter; copy() preserves it).
+- The transcript LazyColumn uses items(..., key = { it.id }) so per-bubble UI
+  state no longer shifts when a tool card is inserted before the bubble.
+- The CoT toggle uses remember(message.id): the expander now survives every
+  streaming delta and stays open while reasoning arrives.
+
+versionCode 38, versionName 1.6.30. testDebugUnitTest + assembleDebug green.

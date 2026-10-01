@@ -81,6 +81,11 @@ internal const val SELF_GOAL =
     "Chiama il tool self e riporta dove sei: percorsi repo/data/sessioni, config, docs, " +
     "stato del servizio SparkForge e come aggiungere skill o server MCP."
 
+/** v1.6.30 (JAG-89): stable per-bubble identity. `copy()` during streaming
+ * preserves it, so UI state keyed on `id` (the CoT expander) survives every
+ * chat.delta instead of being reset (the chevron closed itself mid-stream). */
+private val forgeMsgId = java.util.concurrent.atomic.AtomicLong(0)
+
 /** One chat exchange kept in the Forge transcript. */
 data class ForgeMessage(
     val role: String, // "you" | "forge" | "system" | "tool"
@@ -90,7 +95,8 @@ data class ForgeMessage(
     /** v1.6.3 (JAG-55): when set, this transcript entry is an inline tool mini-card. */
     val tool: ForgeToolCard? = null,
     /** v1.6.26 (JAG-79): when set, this transcript entry is an inline approval card. */
-    val approval: ForgeApproval? = null
+    val approval: ForgeApproval? = null,
+    val id: Long = forgeMsgId.incrementAndGet()
 )
 
 /** v1.6.9 (JAG-58d): renders a JSON value compact-pretty for the tool card. */
@@ -1747,7 +1753,9 @@ fun ForgeScreen(
                 // copied from the phone (long-press → copy) like in any chat app.
                 // Tool-call mini-cards live in the same list, so they appear in the
                 // exact spot of the turn where the tool actually ran.
-                items(model.messages) { message ->
+                // v1.6.30 (JAG-89): stable key — a tool card inserted before the
+                // streaming bubble no longer shifts per-bubble UI state around.
+                items(model.messages, key = { it.id }) { message ->
                     val card = message.tool
                     val ap = message.approval
                     when {
@@ -1902,7 +1910,11 @@ private fun ForgeBubble(message: ForgeMessage) {
                 val canCopy = body.isNotEmpty() && !message.streaming && message.role != "system"
                 // hoisted out of the conditional: a `remember` inside a branch
                 // would desync the slot table when CoT appears mid-stream.
-                var cotExpanded by remember(message) { mutableStateOf(false) }
+                // v1.6.30 (JAG-89): keyed on the stable `id`, NOT on `message` —
+                // during streaming every chat.delta `copy()`s the message, so
+                // remember(message) reset the expander and the chevron closed
+                // itself while the agent was still thinking.
+                var cotExpanded by remember(message.id) { mutableStateOf(false) }
                 if (canCopy || hasThinking) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
