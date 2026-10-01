@@ -954,6 +954,32 @@ class ForgeViewModel : ViewModel() {
         }
     }
 
+    /**
+     * JAG-86: the plan is PERSISTENT by design (it survives every message, like
+     * Claude Code's task list / Deep Agents' todo file), so it must be clearable
+     * ON PURPOSE. The server already exposes
+     * `POST /api/sessions/<sid>/graph/reset` (JAG-63) but the app never called
+     * it — the list felt stuck forever ("se clicco annulla non si cancella").
+     */
+    fun clearPlan() {
+        val host = boundHost
+        val token = boundToken
+        val sid = graphRunId ?: sessionId ?: activeSession
+        graphNodes = emptyList()
+        selectedNode = null
+        statusMessage = "Piano cancellato"
+        if (host.isBlank() || sid.isNullOrBlank()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token,
+                        "/api/sessions/" + URLEncoder.encode(sid, "UTF-8") + "/graph/reset",
+                        "POST")
+                }
+            }
+        }
+    }
+
     /** Upserts a node pushed live via `graph.node.added` / `graph.node.updated`. */
     private fun upsertNode(runId: String, node: ForgeNode) {
         val rid = runId.ifEmpty { graphRunId ?: "" }

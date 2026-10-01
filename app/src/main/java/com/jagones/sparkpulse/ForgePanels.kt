@@ -636,6 +636,11 @@ private fun GraphActionRow(model: ForgeViewModel) {
                 onClick = { model.replanGraph() },
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
             ) { Text("↻ Re-plan", fontSize = 10.sp) }
+            Button(
+                onClick = { model.clearPlan() },
+                colors = ButtonDefaults.buttonColors(containerColor = FCoral),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+            ) { Text("🗑 Cancella piano", fontSize = 10.sp) }
             model.selectedNode?.let { n ->
                 Button(
                     onClick = { model.cancelGraphNode(n) },
