@@ -88,7 +88,9 @@ data class ForgeMessage(
     val thinking: String? = null,
     val streaming: Boolean = false,
     /** v1.6.3 (JAG-55): when set, this transcript entry is an inline tool mini-card. */
-    val tool: ForgeToolCard? = null
+    val tool: ForgeToolCard? = null,
+    /** v1.6.26 (JAG-79): when set, this transcript entry is an inline approval card. */
+    val approval: ForgeApproval? = null
 )
 
 /** v1.6.9 (JAG-58d): renders a JSON value compact-pretty for the tool card. */
@@ -341,8 +343,15 @@ internal fun parseHistory(body: String): List<ForgeMessage> {
  * thread-safe while the blocking socket read happens on IO.
  */
 /** v1.6.5 (JAG-58c): an approval raised by the agent loop, decidable from the
- *  FORGE tab so a `required` tool no longer hangs the run for 300s. */
-data class ForgeApproval(val id: String, val tool: String, val summary: String, val runId: String?)
+ *  FORGE tab so a `required` tool no longer hangs the run for 300s.
+ *  v1.6.26 (JAG-79): rendered INLINE in the transcript (not a separate banner). */
+data class ForgeApproval(
+    val id: String,
+    val tool: String,
+    val summary: String,
+    val runId: String?,
+    val status: String = "pending"
+)
 
 internal fun parseForgeApprovals(body: String): List<ForgeApproval> {
     val array = JSONObject(body).optJSONArray("approvals") ?: return emptyList()
@@ -352,7 +361,8 @@ internal fun parseForgeApprovals(body: String): List<ForgeApproval> {
             id = item.optString("id"),
             tool = item.optString("tool"),
             summary = item.optString("summary").ifEmpty { item.optString("reason") },
-            runId = item.optString("run_id").takeIf { it.isNotEmpty() }
+            runId = item.optString("run_id").takeIf { it.isNotEmpty() },
+            status = item.optString("status").ifEmpty { "pending" }
         )
     }
 }
@@ -437,6 +447,11 @@ class ForgeViewModel : ViewModel() {
     var pendingApprovals by mutableStateOf(listOf<ForgeApproval>())
         private set
     var approvalNotice by mutableStateOf<String?>(null)
+        private set
+
+    /** v1.6.26 (JAG-79): bumped when an inline approval card is added, so the UI
+     *  scrolls it into view (an approval must never sit off-screen unnoticed). */
+    var approvalPing by mutableStateOf(0)
         private set
 
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
@@ -745,7 +760,37 @@ class ForgeViewModel : ViewModel() {
                 }.getOrDefault(emptyList())
             }
             pendingApprovals = list
+            syncApprovalMessages(list)
         }
+    }
+
+    /**
+     * v1.6.26 (JAG-79): keep the approvals INLINE in the transcript — the chat is
+     * the single surface (no separate banner above the input). Newly pending
+     * approvals become an inline card right before the streaming bubble; ones the
+     * server no longer lists are marked resolved. Driven both by the
+     * `approval.*` SSE events and by the 3s poll, so a dropped event still shows.
+     */
+    private fun syncApprovalMessages(list: List<ForgeApproval>) {
+        val ids = list.map { it.id }.toSet()
+        var changed = false
+        var out = messages.map { m ->
+            val ap = m.approval
+            if (ap != null && ap.status == "pending" && ap.id !in ids) {
+                changed = true
+                m.copy(approval = ap.copy(status = "resolved"))
+            } else m
+        }
+        list.forEach { ap ->
+            if (out.none { it.approval?.id == ap.id }) {
+                val at = (streamingIndex ?: out.size).coerceIn(0, out.size)
+                out = out.toMutableList().also { it.add(at, ForgeMessage("approval", "", approval = ap)) }
+                streamingIndex?.let { streamingIndex = it + 1 }
+                changed = true
+                approvalPing++  // v1.6.26: pull the new card into view
+            }
+        }
+        if (changed) messages = out
     }
 
     /** v1.6.5 (JAG-58c): approve/deny a pending approval (chat & agent HITL).
@@ -1178,6 +1223,10 @@ class ForgeViewModel : ViewModel() {
                     }
                     "session.created", "session.deleted" -> refreshSessions()
                     "context.compact" -> refreshContext()
+                    // v1.6.26 (JAG-79): the durable feed carries approval life-cycle
+                    // events too, so a gated tool shows its INLINE card even when no
+                    // chat turn is streaming (the 3s poll is only active in a turn).
+                    "approval.request", "approval.resolved", "approval.decided" -> refreshApprovals()
                     "context.built" -> {
                         // JAG-70: live, authoritative prompt size for this turn.
                         event.json()?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
@@ -1323,6 +1372,8 @@ class ForgeViewModel : ViewModel() {
             }
             "tool.call" -> event.json()?.let(::addToolCard)
             "tool.result" -> event.json()?.let(::updateToolCard)
+            // v1.6.26 (JAG-79): approvals surface INLINE in the chat transcript.
+            "approval.request", "approval.resolved", "approval.decided" -> refreshApprovals()
             "error" -> error = "Chat: " + (event.json()?.optString("error") ?: "errore").take(160)
         }
     }
@@ -1483,6 +1534,14 @@ fun ForgeScreen(
             listState.animateScrollToItem(lastItem.coerceAtLeast(0))
         }
     }
+    // v1.6.26 (JAG-79): a new inline approval card must be SEEN — scroll to it even
+    // if the user had scrolled away (the old design pinned the banner above the
+    // input for exactly this reason).
+    LaunchedEffect(model.approvalPing) {
+        if (model.approvalPing > 0 && model.messages.isNotEmpty()) {
+            listState.animateScrollToItem((model.messages.size - 1).coerceAtLeast(0))
+        }
+    }
     // v1.6.4 (JAG-57): saveable across recomposition/rotation.
     var chatInput by rememberSaveable { mutableStateOf("") }
     var showConfig by rememberSaveable { mutableStateOf(false) }
@@ -1585,10 +1644,17 @@ fun ForgeScreen(
                 // exact spot of the turn where the tool actually ran.
                 items(model.messages) { message ->
                     val card = message.tool
-                    if (card != null) {
-                        ForgeToolCardView(card, onOpen = { selectedTool = card })
-                    } else {
-                        SelectionContainer { ForgeBubble(message) }
+                    val ap = message.approval
+                    when {
+                        // v1.6.26 (JAG-79): approvals live IN the transcript, so an
+                        // approval-gated tool is decided right where it happened.
+                        ap != null -> ForgeApprovalView(
+                            ap,
+                            onApprove = { model.decideApproval(ap.id, "approve") },
+                            onDeny = { model.decideApproval(ap.id, "deny") }
+                        )
+                        card != null -> ForgeToolCardView(card, onOpen = { selectedTool = card })
+                        else -> SelectionContainer { ForgeBubble(message) }
                     }
                 }
                 if (model.liveThinking.isNotBlank()) {
@@ -1603,43 +1669,8 @@ fun ForgeScreen(
             }
         }
 
-        // ── pending approvals — always visible, above the inputs, so a
-        //    `required` tool never dead-locks the run behind a collapsed
-        //    trace panel (JAG-58c) ──
-        if (model.pendingApprovals.isNotEmpty()) {
-            Column(
-                Modifier.fillMaxWidth()
-                    .background(FAmber.copy(alpha = 0.12f))
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                model.pendingApprovals.forEach { ap ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "🛡 ${ap.tool} · #${ap.id}",
-                                color = FAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold
-                            )
-                            if (ap.summary.isNotBlank()) {
-                                Text(ap.summary, color = FTextMain, fontSize = 11.sp)
-                            }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { model.decideApproval(ap.id, "approve") },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = FMint, contentColor = FInk)
-                            ) { Text("APPROVA", fontSize = 11.sp) }
-                            Button(
-                                onClick = { model.decideApproval(ap.id, "deny") },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = FCoral, contentColor = FInk)
-                            ) { Text("NEGA", fontSize = 11.sp) }
-                        }
-                    }
-                }
-            }
-        }
+        // v1.6.26 (JAG-79): the standalone "pending approvals" banner was removed —
+        // approvals are now rendered INLINE in the transcript (single surface).
 
         // ── chat bar (JAG-78: the ONLY entry point — the separate agent bar is
         //    gone; `/goal` runs the agentic loop inside this same chat) ──
@@ -1840,6 +1871,51 @@ private fun ForgeToolCardView(card: ForgeToolCard, onOpen: () -> Unit) {
         }
         if (hasDetail) {
             Text("›", color = FTextMuted, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+/**
+ * v1.6.26 (JAG-79): an approval-gated tool call, rendered INLINE in the chat
+ * transcript (replaces the old banner above the input). While pending it offers
+ * APPROVA/NEGA; once decided (or expired) it collapses to a one-line note.
+ */
+@Composable
+private fun ForgeApprovalView(
+    ap: ForgeApproval,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit
+) {
+    val pending = ap.status == "pending"
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(FAmber.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            if (pending) "🛡 approvazione · ${ap.tool} · #${ap.id}"
+            else "🛡 ${ap.status} · ${ap.tool}",
+            color = FAmber, fontSize = 11.sp, fontWeight = FontWeight.Bold
+        )
+        if (ap.summary.isNotBlank()) {
+            Text(
+                ap.summary, color = FTextMain, fontSize = 11.sp,
+                maxLines = 3, overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (pending) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onApprove,
+                    colors = ButtonDefaults.buttonColors(containerColor = FMint, contentColor = FInk)
+                ) { Text("APPROVA", fontSize = 11.sp) }
+                Button(
+                    onClick = onDeny,
+                    colors = ButtonDefaults.buttonColors(containerColor = FCoral, contentColor = FInk)
+                ) { Text("NEGA", fontSize = 11.sp) }
+            }
         }
     }
 }
