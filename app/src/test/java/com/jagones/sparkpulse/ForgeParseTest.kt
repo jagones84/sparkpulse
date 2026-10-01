@@ -169,4 +169,42 @@ class ForgeParseTest {
         assertTrue(parseHistory("{}").isEmpty())
         assertTrue(parseTaskArray(null).isEmpty())
     }
+
+    @Test
+    fun restoresToolCardsFromHistory() {
+        // JAG-96: the harness persists inline tool cards under `tool_cards`
+        // (`after` = number of messages the card follows). The mirror must
+        // rebuild them, interleaved at the right position on cold start.
+        val body = """{"messages":[
+            {"role":"user","content":"run ls","ts":1.0},
+            {"role":"assistant","content":"done","ts":2.0}
+        ],"tool_cards":[
+            {"tool":"shell","ok":true,"exit_code":0,"result":"a b",
+             "args":"{\"cmd\":\"ls\"}","after":1}
+        ]}"""
+        val messages = parseHistory(body)
+        assertEquals(3, messages.size)
+        assertEquals("you", messages[0].role)
+        assertEquals("tool", messages[1].role)
+        assertEquals("shell", messages[1].tool?.tool)
+        assertEquals(true, messages[1].tool?.ok)
+        assertEquals("a b", messages[1].tool?.result)
+        assertEquals(0, messages[1].tool?.exitCode)
+        assertTrue(messages[1].tool?.args.orEmpty().contains("cmd"))
+        assertEquals("forge", messages[2].role)
+    }
+
+    @Test
+    fun toolCardFailureCarriesErrorAndMissingAfterGoesLast() {
+        // A failed card keeps its stderr; a card with no `after` is appended at
+        // the end rather than silently dropped.
+        val body = """{"messages":[{"role":"user","content":"hi"}],
+            "tool_cards":[{"tool":"git","ok":false,"error":"nope"}]}"""
+        val out = parseHistory(body)
+        assertEquals(2, out.size)
+        assertEquals("tool", out[1].role)
+        assertEquals("git", out[1].tool?.tool)
+        assertEquals(false, out[1].tool?.ok)
+        assertEquals("nope", out[1].tool?.error)
+    }
 }

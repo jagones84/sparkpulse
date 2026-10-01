@@ -42,11 +42,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,16 +67,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 
-internal val FInk = Color(0xFF0A0E14)
-internal val FPanel = Color(0xFF141B24)
-internal val FPanelRaised = Color(0xFF1B2531)
-internal val FTextMain = Color(0xFFF0F4F8)
-internal val FTextMuted = Color(0xFF9AA8B7)
-internal val FMint = Color(0xFF57E3B1)
-internal val FBlue = Color(0xFF8DB8FF)
-internal val FAmber = Color(0xFFFFC66D)
-internal val FCoral = Color(0xFFFF7777)
-internal val FViolet = Color(0xFFB98BFF)
+// v1.6.31 (JAG-96): palette allineata al redesign della WebUI (index.html).
+// Un'unica identità visiva tra PC e telefono: stessi accenti, stesse superfici.
+internal val FInk = Color(0xFF06070C)        // app background  (--bg)
+internal val FPanel = Color(0xFF121722)      // panel surface   (--bg-2)
+internal val FPanelRaised = Color(0xFF161B25) // raised panel   (--bg-3)
+internal val FTextMain = Color(0xFFDFE4FF)   // primary text    (--txt)
+internal val FTextMuted = Color(0xFF7C86AD)  // muted text      (--dim)
+internal val FLine = Color(0xFF1E2431)       // borders         (--line-2)
+internal val FMint = Color(0xFF4ADE80)       // ok              (--ok)
+internal val FBlue = Color(0xFF5AC8FA)       // info            (--info)
+internal val FYou = Color(0xFF8FB6FF)        // user accent     (--you)
+internal val FAmber = Color(0xFFFFB020)      // warn            (--warn)
+internal val FCoral = Color(0xFFF87171)      // err             (--err)
+internal val FViolet = Color(0xFFB56CFF)     // accent 2        (--acc2)
+internal val FAccent = Color(0xFF8B7BF0)     // brand accent    (--accent)
 
 /** Quick-action "Dove sei / comandi": goal that makes the agent invoke the v0.5 `self` tool. */
 internal const val SELF_GOAL =
@@ -325,29 +332,39 @@ internal fun applyToolResult(messages: List<ForgeMessage>, card: ForgeToolCard):
     }
 }
 
-/** Rebuilds the chat transcript from the `messages` array of `GET /api/history`. */
+/** Rebuilds the chat transcript from `GET /api/history` (messages + tool_cards). */
 internal fun parseHistory(body: String): List<ForgeMessage> {
-    val arr = runCatching { JSONObject(body).optJSONArray("messages") }.getOrNull() ?: return emptyList()
+    val root = runCatching { JSONObject(body) }.getOrNull() ?: return emptyList()
+    val arr = root.optJSONArray("messages") ?: return emptyList()
+
+    // JAG-96: the harness persists each inline tool card under `tool_cards`
+    // (`after` = number of messages it follows) so the mirror can rebuild the
+    // transcript on cold start. Cards live OUTSIDE `messages`, so they never
+    // reach the model prompt. Field names MUST match ForgeToolCard.
+    val byAfter = HashMap<Int, MutableList<ForgeToolCard>>()
+    root.optJSONArray("tool_cards")?.let { cards ->
+        for (i in 0 until cards.length()) {
+            val c = cards.optJSONObject(i) ?: continue
+            val after = if (c.has("after")) c.optInt("after") else arr.length()
+            val card = ForgeToolCard(
+                tool = c.optString("tool", "tool"),
+                ok = if (c.has("ok")) c.optBoolean("ok") else null,
+                summary = "da cronologia",
+                exitCode = if (c.has("exit_code") && !c.isNull("exit_code"))
+                    c.optInt("exit_code") else null,
+                backend = c.optString("backend").ifEmpty { "history" },
+                result = c.optString("result"),
+                args = c.optString("args").ifEmpty { "{args non persistiti}" },
+                error = c.optString("error")
+            )
+            byAfter.getOrPut(after) { mutableListOf() }.add(card)
+        }
+    }
+
     val out = mutableListOf<ForgeMessage>()
     for (i in 0 until arr.length()) {
+        byAfter[i]?.forEach { out += ForgeMessage("tool", "", tool = it) }
         val m = arr.optJSONObject(i) ?: continue
-
-        // JAG-90: Restore Tool Cards from server history (i sotto-campi persi)
-        val meta = m.optJSONObject("meta")
-        if (meta != null && meta.has("tool")) {
-            val toolName = meta.optString("tool")
-            val ok = meta.optBoolean("ok", true)
-            val card = ForgeToolCard(
-                id = "hist-" + i.toString(),
-                tool = toolName,
-                args = "{args in cronologia offline}",
-                status = if (ok) "executed" else "error",
-                result = if (ok) "Eseguito (offline)" else "Errore",
-                backend = "history"
-            )
-            out += ForgeMessage("tool", "", tool = card)
-            continue
-        }
         val role = when (m.optString("role")) {
             "user" -> "you"
             "assistant" -> "forge"
@@ -357,6 +374,7 @@ internal fun parseHistory(body: String): List<ForgeMessage> {
         val (answer, think) = splitAnswerTail(src)
         out += ForgeMessage(role, answer, m.optString("reasoning").ifEmpty { think.ifEmpty { null } })
     }
+    byAfter[arr.length()]?.forEach { out += ForgeMessage("tool", "", tool = it) }
     return out
 }
 
@@ -1363,6 +1381,14 @@ class ForgeViewModel : ViewModel() {
                     // events too, so a gated tool shows its INLINE card even when no
                     // chat turn is streaming (the 3s poll is only active in a turn).
                     "approval.request", "approval.resolved", "approval.decided" -> refreshApprovals()
+                    // JAG-96: deterministic process-reward (PRM) verification report
+                    // from the harness — surfaced so inefficiencies are visible.
+                    "prm.feedback" -> {
+                        val j = event.json()
+                        val score = j?.optDouble("score") ?: 0.0
+                        statusMessage = "verify ${"%.2f".format(score)} · " +
+                            j?.optString("feedback").orEmpty().take(90)
+                    }
                     "context.built" -> {
                         // JAG-70: live, authoritative prompt size for this turn.
                         event.json()?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
@@ -1567,6 +1593,9 @@ class ForgeViewModel : ViewModel() {
             "approval.resolved" -> append("🛡 approvazione ${json.optString("status")} · #${json.optString("id")}")
             "tool.call" -> append("🔧 ${json.optString("tool")}")
             "tool.result" -> append("✅ ${json.optString("tool")} ok=${json.optBoolean("ok")}")
+            "prm.feedback" -> append(
+                "📉 verify ${"%.2f".format(json.optDouble("score"))} · " +
+                    json.optString("feedback").take(120))
             "error" -> error = "Agente: " + (json.optString("error").ifEmpty { "errore" }).take(160)
         }
     }
@@ -1700,28 +1729,34 @@ fun ForgeScreen(
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().imePadding()) {
         // ── header: run banner + plan status ──
-        Column(Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 18.dp, vertical = 10.dp)) {
+        Column(Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 16.dp, vertical = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "⚡ SPARKFORGE",
+                        fontSize = 15.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp,
+                        style = TextStyle(brush = Brush.linearGradient(listOf(FAccent, FViolet, FYou)))
+                    )
+                    Text(
+                        "harness · DGX Spark",
+                        color = FTextMuted, fontSize = 10.sp, letterSpacing = 1.sp
+                    )
+                }
+                val state = when {
+                    model.coldStart != null -> "LLM AVVIO" to FAmber
+                    model.busy -> "LIVE" to FMint
+                    else -> "IDLE" to FTextMuted
+                }
                 Text(
-                    "SPARKFORGE · SSE LIVE",
-                    color = FTextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    when {
-                        model.coldStart != null -> "LLM IN AVVIO"
-                        model.busy -> "STREAMING"
-                        else -> "IDLE"
-                    },
-                    color = when {
-                        model.coldStart != null -> FAmber
-                        model.busy -> FMint
-                        else -> FTextMuted
-                    }, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                    state.first,
+                    color = state.second, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .background(state.second.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 )
                 Button(
                     onClick = { showConfig = !showConfig },
-                    modifier = Modifier.padding(start = 8.dp),
+                    modifier = Modifier.padding(start = 6.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = FPanelRaised, contentColor = FTextMain)
                 ) { Text("⚙", fontSize = 12.sp) }
             }
@@ -1904,12 +1939,17 @@ private fun ForgeBubble(message: ForgeMessage) {
     ) {
         Text(
             if (isYou) "TU" else if (message.role == "system") "· · ·" else "SPARKFORGE",
-            color = FTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
+            color = if (isYou) FYou else FTextMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp
         )
+        val bubbleBg = when (message.role) {
+            "system" -> Color.Transparent
+            "you" -> FYou.copy(alpha = 0.14f)
+            else -> FPanelRaised
+        }
         Box(
             Modifier
                 .widthIn(max = 340.dp)
-                .background(if (message.role == "system") Color.Transparent else FPanel, RoundedCornerShape(14.dp))
+                .background(bubbleBg, RoundedCornerShape(16.dp))
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
