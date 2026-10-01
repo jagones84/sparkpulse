@@ -111,18 +111,45 @@ fun ForgeToolbar(model: ForgeViewModel) {
             exit = shrinkVertically() + fadeOut()
         ) {
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // JAG-78: the panels are MUTUALLY EXCLUSIVE (accordion). Before,
+                // each had its own flag and the `when` below showed only the first
+                // open one, so tapping another panel looked dead ("non si disattiva
+                // l'altro, così non si vede"). Now opening one closes the others.
+                fun closeOthers(keep: String) {
+                    if (keep != "sessions") sessionsOpen = false
+                    if (keep != "compact") compactOpen = false
+                    if (keep != "graph" && model.graphOpen) model.toggleGraph()
+                    if (keep != "cot" && model.cotOpen) model.toggleCot()
+                    if (keep != "self" && model.selfOpen) model.toggleSelf()
+                }
                 Column(Modifier.width(126.dp)) {
                     ForgeRailItem("SESSIONI", sessionsOpen) {
-                        sessionsOpen = !sessionsOpen
-                        if (sessionsOpen) model.refreshSessions()
+                        val on = !sessionsOpen
+                        closeOthers("sessions")
+                        sessionsOpen = on
+                        if (on) model.refreshSessions()
                     }
-                    ForgeRailItem("🧩 GRAFO $graphTodo", model.graphOpen) { model.toggleGraph() }
+                    ForgeRailItem("🧩 GRAFO $graphTodo", model.graphOpen) {
+                        val on = !model.graphOpen
+                        closeOthers("graph")
+                        if (on != model.graphOpen) model.toggleGraph()
+                    }
                     ForgeRailItem("🗜 COMPACTION", compactOpen) {
-                        compactOpen = !compactOpen
-                        if (compactOpen) model.refreshContext()
+                        val on = !compactOpen
+                        closeOthers("compact")
+                        compactOpen = on
+                        if (on) model.refreshContext()
                     }
-                    ForgeRailItem("🧠 CoT", model.cotOpen) { model.toggleCot() }
-                    ForgeRailItem("🧭 Dove sei", model.selfOpen) { model.toggleSelf() }
+                    ForgeRailItem("🧠 CoT", model.cotOpen) {
+                        val on = !model.cotOpen
+                        closeOthers("cot")
+                        if (on != model.cotOpen) model.toggleCot()
+                    }
+                    ForgeRailItem("🧭 Dove sei", model.selfOpen) {
+                        val on = !model.selfOpen
+                        closeOthers("self")
+                        if (on != model.selfOpen) model.toggleSelf()
+                    }
                 }
                 Column(Modifier.weight(1f)) {
                     when {

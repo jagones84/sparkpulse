@@ -516,15 +516,32 @@ class ForgeViewModel : ViewModel() {
 
     fun sendChat(host: String, token: String, text: String) {
         if (text.isBlank() || busy) return
+        val trimmed = text.trim()
+        // JAG-78: slash commands run INSIDE the chat — no separate agent run.
+        // `/help` answers locally; `/goal <x>` runs the SAME chat loop in
+        // autonomous mode (the server adds the plan-first directive).
+        if (trimmed == "/help" || trimmed == "/?") {
+            messages = messages + ForgeMessage("you", trimmed) + ForgeMessage("forge", FORGE_COMMANDS_HELP)
+            return
+        }
+        val isGoal = trimmed == "/goal" || trimmed.startsWith("/goal ")
+        val body = if (isGoal) trimmed.removePrefix("/goal").trim() else trimmed
+        if (body.isBlank()) {
+            messages = messages + ForgeMessage("you", trimmed) +
+                ForgeMessage("forge", "Uso: /goal <obiettivo>")
+            return
+        }
         val query = buildString {
-            append("/api/chat/stream?message=").append(URLEncoder.encode(text, "UTF-8"))
+            append("/api/chat/stream?message=").append(URLEncoder.encode(body, "UTF-8"))
             sessionId?.let { append("&session=").append(URLEncoder.encode(it, "UTF-8")) }
             // v1.6.17 (JAG-71): the user's chosen model (provider:model), if any.
             selectedModel?.let { append("&model=").append(URLEncoder.encode(it, "UTF-8")) }
+            if (isGoal) append("&mode=goal")
         }
-        graphGoal = text
-        banner = "pianifico…"
-        messages = messages + ForgeMessage("you", text) + ForgeMessage("forge", "", streaming = true)
+        graphGoal = body
+        banner = if (isGoal) "obiettivo: pianifico…" else "pianifico…"
+        val shown = if (isGoal) "🎯 $body" else body
+        messages = messages + ForgeMessage("you", shown) + ForgeMessage("forge", "", streaming = true)
         streamingIndex = messages.lastIndex
         busy = true
         error = null
@@ -1220,6 +1237,14 @@ class ForgeViewModel : ViewModel() {
                 parseGraphNode(j?.optJSONObject("node"))?.let { upsertNode(key, it) }
             }
             "graph.generated" -> banner = "task graph: ${event.json()?.optInt("nodes") ?: 0} nodi"
+            // JAG-78: live prompt size for THIS turn → the ctx meter updates as
+            // soon as the turn starts, not only at the end.
+            "context.built" -> {
+                val j = event.json()
+                j?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
+                j?.optInt("budget_tokens")?.let { if (it > 0) contextBudget = it }
+                contextAvailable = true
+            }
             "chat.delta" -> {
                 val json = event.json() ?: return
                 val text = json.optString("text")
@@ -1340,6 +1365,17 @@ class ForgeViewModel : ViewModel() {
     }
 }
 
+/**
+ * JAG-78: helper text shown by `/help`. Commands run INSIDE the chat — there is
+ * no separate agent session/run any more.
+ */
+internal val FORGE_COMMANDS_HELP = """
+Comandi disponibili (nella chat, stessa sessione):
+• /goal <obiettivo> — modalità autonoma: il modello pianifica (write_todos),
+  esegue i passi con i tool e aggiorna il grafo, senza chiedere conferma.
+• /help — mostra questo elenco.
+""".trim()
+
 @Composable
 fun ForgeScreen(
     host: String,
@@ -1376,7 +1412,6 @@ fun ForgeScreen(
     }
     // v1.6.4 (JAG-57): saveable across recomposition/rotation.
     var chatInput by rememberSaveable { mutableStateOf("") }
-    var agentInput by rememberSaveable { mutableStateOf("") }
     var showConfig by rememberSaveable { mutableStateOf(false) }
     // v1.6.11 (JAG-62): the tapped tool card opens a lateral detail drawer instead
     // of expanding inline, so the transcript stays compact.
@@ -1493,11 +1528,6 @@ fun ForgeScreen(
                 }
             }
             }
-
-            // ── agent trace (thought → action → observation), collapsible ──
-            if (model.agentLines.isNotEmpty()) {
-                ForgeAgentTrace(model)
-            }
         }
 
         // ── pending approvals — always visible, above the inputs, so a
@@ -1538,29 +1568,8 @@ fun ForgeScreen(
             }
         }
 
-        // ── agent bar ──
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = agentInput,
-                onValueChange = { agentInput = it },
-                label = { Text("Obiettivo agente ⚡") },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                enabled = !model.busy
-            )
-            Button(
-                onClick = { model.runAgent(host, token, agentInput.trim()); agentInput = "" },
-                enabled = !model.busy && agentInput.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = FViolet, contentColor = FInk)
-            ) { Text("⚡") }
-        }
-
-        // ── chat bar ──
+        // ── chat bar (JAG-78: the ONLY entry point — the separate agent bar is
+        //    gone; `/goal` runs the agentic loop inside this same chat) ──
         Row(
             Modifier.fillMaxWidth().background(FPanel).padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1569,7 +1578,7 @@ fun ForgeScreen(
             OutlinedTextField(
                 value = chatInput,
                 onValueChange = { chatInput = it },
-                label = { Text("Messaggio a SparkForge") },
+                label = { Text("Messaggio · /goal · /help") },
                 singleLine = true,
                 modifier = Modifier.weight(1f),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -1595,7 +1604,7 @@ fun ForgeScreen(
         if (model.messages.isNotEmpty()) {
             Box(
                 Modifier.align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 150.dp)
+                    .padding(end = 16.dp, bottom = 84.dp)
                     .background(if (atBottom) FPanelRaised else FMint, RoundedCornerShape(999.dp))
                     .clickable {
                         scope.launch { listState.animateScrollToItem(lastItem.coerceAtLeast(0)) }
