@@ -553,7 +553,6 @@ class ForgeViewModel : ViewModel() {
             onEvent = ::handleChatEvent,
             isChat = true,
             onEnd = { failure ->
-                failure?.let { error = "Chat interrotta: ${it.take(140)}" }
                 finishStreaming()
                 // v1.6.1 (JAG-49): the stream is over → clear the job and leave
                 // `busy`. Previously this only happened in stop(), so a finished
@@ -563,12 +562,68 @@ class ForgeViewModel : ViewModel() {
                 busy = false
                 coldStart = null
                 stopApprovalPoll()
-                // v1.6.3 (JAG-55): the first turn creates the session server-side,
-                // so re-read the context with the id we learned from the stream
-                // (n/d before, real numbers now).
-                refreshContext()
+                if (failure != null) {
+                    // JAG-79: a dropped SSE socket must not strand the user on a
+                    // dead "Chat interrotta" bubble — the server keeps running the
+                    // turn and persists the reply, so reconnect and re-sync.
+                    resyncAfterDrop(failure)
+                } else {
+                    // v1.6.3 (JAG-55): the first turn creates the session
+                    // server-side, so re-read the context with the id we learned
+                    // from the stream (n/d before, real numbers now).
+                    refreshContext()
+                }
             }
         )
+    }
+
+    /**
+     * JAG-79 — network-drop recovery for the chat stream.
+     *
+     * The SparkForge chat handler keeps producing and persisting the assistant
+     * turn even if the phone's socket dies (mobile NAT/proxy abort), so instead
+     * of showing a terminal error we poll `GET /api/history` until the reply for
+     * THIS turn shows up, then replace the local transcript with the server
+     * truth. No more "il messaggio si è bloccato": the answer appears.
+     */
+    private fun resyncAfterDrop(failure: String) {
+        val host = boundHost
+        val token = boundToken
+        val sid = sessionId ?: activeSession
+        if (host.isBlank() || sid.isNullOrBlank()) {
+            error = "Chat interrotta: ${failure.take(140)}"
+            return
+        }
+        val before = messages.count { it.role == "forge" }
+        error = null
+        banner = "connessione persa · risincronizzo…"
+        viewModelScope.launch {
+            var recovered: List<ForgeMessage>? = null
+            for (attempt in 0 until 12) {
+                if (recovered != null) break
+                val loaded = withContext(Dispatchers.IO) {
+                    runCatching {
+                        rest.text(host, token, "/api/history?session=" + URLEncoder.encode(sid, "UTF-8"))
+                    }.map { parseHistory(it) }.getOrNull()
+                }
+                if (loaded != null && loaded.count { it.role == "forge" } > before) {
+                    recovered = loaded
+                } else {
+                    delay(1500)
+                }
+            }
+            val got = recovered
+            if (got != null) {
+                messages = got
+                statusMessage = "Riconnesso · risposta recuperata dal server"
+                banner = ""
+            } else {
+                error = "Chat interrotta: ${failure.take(140)}"
+                banner = ""
+            }
+            refreshContext()
+            refreshGraph(sid)
+        }
     }
 
     fun runAgent(host: String, token: String, goal: String) {
