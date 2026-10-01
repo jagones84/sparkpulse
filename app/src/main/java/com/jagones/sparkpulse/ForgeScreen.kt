@@ -331,6 +331,23 @@ internal fun parseHistory(body: String): List<ForgeMessage> {
     val out = mutableListOf<ForgeMessage>()
     for (i in 0 until arr.length()) {
         val m = arr.optJSONObject(i) ?: continue
+
+        // JAG-90: Restore Tool Cards from server history (i sotto-campi persi)
+        val meta = m.optJSONObject("meta")
+        if (meta != null && meta.has("tool")) {
+            val toolName = meta.optString("tool")
+            val ok = meta.optBoolean("ok", true)
+            val card = ForgeToolCard(
+                id = "hist-" + i.toString(),
+                tool = toolName,
+                args = "{args in cronologia offline}",
+                status = if (ok) "executed" else "error",
+                result = if (ok) "Eseguito (offline)" else "Errore",
+                backend = "history"
+            )
+            out += ForgeMessage("tool", "", tool = card)
+            continue
+        }
         val role = when (m.optString("role")) {
             "user" -> "you"
             "assistant" -> "forge"
@@ -1324,6 +1341,14 @@ class ForgeViewModel : ViewModel() {
                         val j = event.json()
                         parseGraphNode(j?.optJSONObject("node"))?.let {
                             upsertNode(j?.optString("run").orEmpty(), it)
+                        }
+                    }
+
+                    // JAG-90: Re-attach to live chat stream if the app was reopened mid-turn
+                    "chat.delta", "tool.call", "tool.result", "chat.done" -> {
+                        val j = event.json()
+                        if (j != null && j.optString("session") == activeSession && streamJob == null) {
+                            handleChatEvent(event)
                         }
                     }
                     "graph.generated" -> statusMessage =
