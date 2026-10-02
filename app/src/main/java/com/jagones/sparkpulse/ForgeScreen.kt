@@ -530,19 +530,18 @@ class ForgeViewModel : ViewModel() {
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
      *  v1.6.16 (JAG-70): `used` is the EFFECTIVE prompt size the server really
      *  sends (system prompt + transcript), not just the stored transcript. */
-    var contextUsed by mutableStateOf(0)
+    /** JAG-107: the context indicator is rendered from server-computed strings
+     *  (`display` block of `/api/context`), so token formatting, the percentage
+     *  and the over/near state are never replicated between the two clients. */
+    var ctxShort by mutableStateOf("ctx n/d")
         private set
-    var contextBudget by mutableStateOf(0)
+    var ctxState by mutableStateOf("na")
         private set
-    var contextOver by mutableStateOf(false)
+    var ctxDetail by mutableStateOf("contesto n/d")
         private set
-
-    /** JAG-70: percentage of the real budget in use + the auto-compact threshold. */
-    var contextPct by mutableStateOf(0f)
+    var ctxBarPct by mutableStateOf(0)
         private set
-    var contextThreshold by mutableStateOf(0f)
-        private set
-    var contextNearLimit by mutableStateOf(false)
+    var ctxBarHot by mutableStateOf(false)
         private set
 
     /** v1.6.17 (JAG-71): provider/model catalogue (`GET /api/providers`) + the
@@ -1243,14 +1242,8 @@ class ForgeViewModel : ViewModel() {
         val token = boundToken
         val sid = sessionId
         if (sid.isNullOrBlank()) {
-            contextUsed = 0
-            contextBudget = 0
-            contextOver = false
-            contextPct = 0f
-            contextThreshold = 0f
-            contextNearLimit = false
             contextMessages = 0
-            contextAvailable = false
+            applyCtxDisplay(null)
             return
         }
         viewModelScope.launch {
@@ -1259,17 +1252,30 @@ class ForgeViewModel : ViewModel() {
             val result = withContext(Dispatchers.IO) { runCatching { rest.text(host, token, path) } }
             result.onSuccess { body ->
                 val j = runCatching { JSONObject(body) }.getOrNull() ?: return@onSuccess
-                val available = j.optBoolean("available", true)
-                contextAvailable = available
-                contextUsed = if (available) j.optInt("tokens_used") else 0
-                contextBudget = if (available) j.optInt("budget_tokens") else 0
-                contextMessages = if (available) j.optInt("messages") else 0
-                contextOver = available && j.optBoolean("over_budget")
-                contextPct = if (available) j.optDouble("pct", 0.0).toFloat() else 0f
-                contextThreshold = j.optDouble("auto_compact_pct", 0.0).toFloat()
-                contextNearLimit = available && j.optBoolean("over_threshold")
+                contextMessages = if (j.optBoolean("available", true)) j.optInt("messages") else 0
+                applyCtxDisplay(j.optJSONObject("display"))
             }
         }
+    }
+
+    /** JAG-107: bind the server-computed context display block verbatim — the
+     *  single source of truth for the meter string, state and bar fill. */
+    private fun applyCtxDisplay(d: JSONObject?) {
+        if (d == null) {
+            contextAvailable = false
+            ctxState = "na"
+            ctxShort = "ctx n/d"
+            ctxDetail = "contesto n/d"
+            ctxBarPct = 0
+            ctxBarHot = false
+            return
+        }
+        contextAvailable = d.optBoolean("available", false)
+        ctxState = d.optString("state", if (contextAvailable) "normal" else "na")
+        ctxShort = d.optString("short", "ctx n/d")
+        ctxDetail = d.optString("detail", "contesto n/d")
+        ctxBarPct = d.optInt("bar_pct", 0)
+        ctxBarHot = d.optBoolean("bar_hot", false)
     }
 
     /** `POST /api/context/compact` — compacts the active session, then reloads it. */
@@ -1393,8 +1399,8 @@ class ForgeViewModel : ViewModel() {
                             j?.optString("feedback").orEmpty().take(90)
                     }
                     "context.built" -> {
-                        // JAG-70: live, authoritative prompt size for this turn.
-                        event.json()?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
+                        // JAG-107: live, authoritative context display for this turn.
+                        applyCtxDisplay(event.json()?.optJSONObject("display"))
                     }
                     "context.auto_compact" -> {
                         statusMessage = "auto-compaction: contesto oltre il " +
@@ -1508,12 +1514,7 @@ class ForgeViewModel : ViewModel() {
             "graph.generated" -> banner = "task graph: ${event.json()?.optInt("nodes") ?: 0} nodi"
             // JAG-78: live prompt size for THIS turn → the ctx meter updates as
             // soon as the turn starts, not only at the end.
-            "context.built" -> {
-                val j = event.json()
-                j?.optInt("final_tokens")?.let { if (it > 0) contextUsed = it }
-                j?.optInt("budget_tokens")?.let { if (it > 0) contextBudget = it }
-                contextAvailable = true
-            }
+            "context.built" -> applyCtxDisplay(event.json()?.optJSONObject("display"))
             "chat.delta" -> {
                 val json = event.json() ?: return
                 val text = json.optString("text")

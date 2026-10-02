@@ -59,7 +59,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
     var sessionsOpen by rememberSaveable { mutableStateOf(false) }
     var compactOpen by rememberSaveable { mutableStateOf(false) }
     val graphTodo = model.graphNodes.count { it.status != "done" }
-    val ctxReady = model.contextAvailable && model.contextBudget > 0
+    val ctxReady = model.contextAvailable
 
     Column(Modifier.fillMaxWidth().background(FPanelRaised).padding(horizontal = 12.dp, vertical = 8.dp)) {
         // ── top strip: the freccetta + the always-useful context meter ──
@@ -77,14 +77,13 @@ fun ForgeToolbar(model: ForgeViewModel) {
             if (graphTodo > 0) {
                 Text("🧩 $graphTodo", color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
-            val pct = if (model.contextPct > 0f) " · ${model.contextPct.toInt()}%" else ""
+            // JAG-107: meter text and colour state come straight from the server.
             Text(
-                if (!ctxReady) "ctx n/d" else
-                    "ctx ${fmtTokens(model.contextUsed)}/${fmtTokens(model.contextBudget)}$pct",
+                if (!ctxReady) "ctx n/d" else model.ctxShort,
                 color = when {
                     !ctxReady -> FTextMuted
-                    model.contextOver -> FCoral
-                    model.contextNearLimit -> FAmber
+                    model.ctxState == "over" -> FCoral
+                    model.ctxState == "near" -> FAmber
                     else -> FMint
                 },
                 fontSize = 10.sp,
@@ -181,10 +180,6 @@ fun ForgeToolbar(model: ForgeViewModel) {
     }
 }
 
-/** v1.6.16 (JAG-70): compact token count for the ctx indicator (258048 → 258k). */
-private fun fmtTokens(n: Int): String =
-    if (n >= 10000) "%.0fk".format(n / 1000.0) else n.toString()
-
 /** v1.6.11 (JAG-62): one row of the lateral rail nav column. */
 @Composable
 private fun ForgeRailItem(label: String, active: Boolean, onClick: () -> Unit) {
@@ -229,8 +224,7 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 Text("✕", color = FTextMuted, fontSize = 14.sp)
             }
         }
-        val budget = if (model.contextBudget > 0) model.contextBudget else 0
-        if (budget <= 0) {
+        if (!model.contextAvailable) {
             Text(
                 "contesto n/d — nessuna sessione attiva (crea o seleziona una sessione)",
                 color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
@@ -242,25 +236,25 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
                     color = FBlue, fontSize = 10.sp
                 )
             }
-            val pct = ((model.contextUsed.toFloat() / budget.coerceAtLeast(1)) * 100f).coerceIn(0f, 100f)
+            // JAG-107: bar fill + detail string are server-computed.
+            val pct = (model.ctxBarPct.toFloat() / 100f).coerceIn(0f, 1f)
             Box(
                 Modifier.fillMaxWidth().heightIn(min = 8.dp).padding(top = 6.dp)
                     .background(FInk, RoundedCornerShape(999.dp))
             ) {
                 Box(
-                    Modifier.fillMaxWidth(pct / 100f).heightIn(min = 8.dp)
-                        .background(if (model.contextOver) FCoral else FMint, RoundedCornerShape(999.dp))
+                    Modifier.fillMaxWidth(pct).heightIn(min = 8.dp)
+                        .background(
+                            if (model.ctxState == "over") FCoral else FMint,
+                            RoundedCornerShape(999.dp)
+                        )
                 )
             }
             Text(
-                "usati ${fmtTokens(model.contextUsed)} / ${fmtTokens(budget)} token" +
-                    (if (model.contextPct > 0f) " · ${model.contextPct.toInt()}%" else "") +
-                    (if (model.contextNearLimit && !model.contextOver)
-                        " · auto-compact al ${model.contextThreshold.toInt()}%" else "") +
-                    (if (model.contextOver) " · sopra soglia" else ""),
+                model.ctxDetail,
                 color = when {
-                    model.contextOver -> FCoral
-                    model.contextNearLimit -> FAmber
+                    model.ctxState == "over" -> FCoral
+                    model.ctxState == "near" -> FAmber
                     else -> FTextMuted
                 }, fontSize = 11.sp,
                 modifier = Modifier.padding(top = 4.dp)
