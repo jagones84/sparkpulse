@@ -5,7 +5,9 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,6 +38,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -188,14 +192,21 @@ private fun ForgeRailItem(label: String, active: Boolean, onClick: () -> Unit) {
         Modifier
             .fillMaxWidth()
             .padding(vertical = 2.dp)
-            .background(if (active) FPanel else FPanelRaised, RoundedCornerShape(8.dp))
+            .background(
+                if (active) ForgeAccent.copy(alpha = 0.16f) else FPanelRaised,
+                RoundedCornerShape(8.dp)
+            )
+            .border(
+                BorderStroke(1.dp, if (active) ForgeAccent.copy(alpha = 0.55f) else FLine),
+                RoundedCornerShape(8.dp)
+            )
             .clickable { onClick() }
             .padding(horizontal = 8.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             label,
-            color = if (active) FMint else FTextMain,
+            color = if (active) FTextMain else FTextMuted,
             fontSize = 11.sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
         )
@@ -208,10 +219,7 @@ private fun ForgeRailItem(label: String, active: Boolean, onClick: () -> Unit) {
  */
 @Composable
 private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 220.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 220.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "COMPACTION · contesto sessione", color = FMint, fontSize = 10.sp,
@@ -274,10 +282,7 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
  */
 @Composable
 private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 260.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 260.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "SETTINGS · politiche dei tool", color = FBlue, fontSize = 10.sp,
@@ -353,10 +358,7 @@ private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
  */
 @Composable
 private fun ForgeSelfPanel(model: ForgeViewModel) {
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 220.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 220.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "DOVE SEI · self", color = FViolet, fontSize = 10.sp,
@@ -395,10 +397,7 @@ private fun ForgeSelfPanel(model: ForgeViewModel) {
  */
 @Composable
 private fun ForgeModelPicker(model: ForgeViewModel) {
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 320.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 320.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "MODELLO · /api/providers", color = FViolet, fontSize = 10.sp,
@@ -457,11 +456,16 @@ private fun ModelRow(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun ForgeChip(label: String, active: Boolean = false, onClick: () -> Unit) {
     Box(
         Modifier
-            .background(if (active) FMint else FInk, RoundedCornerShape(20.dp))
+            .background(
+                if (active) Brush.horizontalGradient(listOf(ForgeAccent, FViolet))
+                else Brush.horizontalGradient(listOf(FInk, FInk)),
+                RoundedCornerShape(20.dp)
+            )
+            .border(BorderStroke(1.dp, if (active) ForgeAccent else FLine), RoundedCornerShape(20.dp))
             .clickable { onClick() }
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
-        Text(label, color = if (active) FInk else FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = if (active) Color.White else FTextMain, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -469,10 +473,7 @@ private fun ForgeChip(label: String, active: Boolean = false, onClick: () -> Uni
 @Composable
 private fun ForgeSessionsPanel(model: ForgeViewModel, onClose: () -> Unit) {
     var newTitle by rememberSaveable { mutableStateOf("") }
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 280.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 280.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "SESSIONI · /api/sessions", color = FTextMuted, fontSize = 10.sp,
@@ -539,10 +540,7 @@ private fun SessionRow(s: ForgeSession, active: Boolean, model: ForgeViewModel) 
  */
 @Composable
 private fun ForgeGraphPanel(model: ForgeViewModel, onClose: () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 360.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 360.dp)) {
         val done = model.graphNodes.count { it.status == "done" }
         val runShort = model.graphRunId?.take(8) ?: "-"
         val total = model.graphNodes.size
@@ -689,10 +687,7 @@ private fun nodeColor(status: String) = when (status) {
 @Composable
 private fun ForgeCotDrawer(model: ForgeViewModel) {
     val scroll = rememberScrollState()
-    Column(
-        Modifier.fillMaxWidth().heightIn(max = 200.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.heightIn(max = 200.dp)) {
         Text(
             "CoT · RAGIONAMENTO (channel=think)", color = FViolet, fontSize = 10.sp,
             fontWeight = FontWeight.Bold, letterSpacing = 1.sp
@@ -736,10 +731,7 @@ fun ForgeConfigPanel(
     var hostInput by remember(host) { mutableStateOf(host) }
     var tokenInput by remember(token) { mutableStateOf(token) }
 
-    Column(
-        Modifier.fillMaxWidth().padding(top = 8.dp)
-            .background(FPanel, RoundedCornerShape(10.dp)).padding(10.dp)
-    ) {
+    ForgePanelCard(Modifier.padding(top = 8.dp)) {
         Text(
             "IMPOSTAZIONI FORGE · host + token", color = FTextMuted, fontSize = 10.sp,
             fontWeight = FontWeight.Bold, letterSpacing = 1.sp

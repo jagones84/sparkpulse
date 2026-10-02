@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -61,6 +62,19 @@ internal fun ForgeCard(modifier: Modifier = Modifier, content: @Composable () ->
             .border(BorderStroke(1.dp, ForgeLine), ForgeCardShape)
             .padding(16.dp)
     ) { content() }
+}
+
+/** Panel surface for the lateral-rail panels (Graph/Sessions/Settings/…). */
+@Composable
+internal fun ForgePanelCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier
+            .fillMaxWidth()
+            .background(ForgePanel, ForgePanelShape)
+            .border(BorderStroke(1.dp, ForgeLine), ForgePanelShape)
+            .padding(12.dp),
+        content = content
+    )
 }
 
 /** Text filled with the brand gradient. */
