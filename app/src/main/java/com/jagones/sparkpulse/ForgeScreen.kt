@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -1695,10 +1696,9 @@ fun ForgeScreen(
     // Follow on content growth too: streaming appends to the last message without
     // changing the item count, so keying only on `size` froze the view.
     val lastLen = model.messages.lastOrNull()?.text?.length ?: 0
-    val lastItem = model.messages.size - 1 + (if (model.liveThinking.isNotBlank()) 1 else 0)
     LaunchedEffect(model.messages.size, lastLen, model.liveThinking.length) {
         if (model.messages.isNotEmpty() && atBottom) {
-            listState.animateScrollToItem(lastItem.coerceAtLeast(0))
+            listState.animateToBottom()  // JAG-101: true bottom, not the last item's top
         }
     }
     // v1.6.26 (JAG-79): a new inline approval card must be SEEN — scroll to it even
@@ -1706,7 +1706,7 @@ fun ForgeScreen(
     // input for exactly this reason).
     LaunchedEffect(model.approvalPing) {
         if (model.approvalPing > 0 && model.messages.isNotEmpty()) {
-            listState.animateScrollToItem((model.messages.size - 1).coerceAtLeast(0))
+            listState.animateToBottom()  // JAG-101: the approval card is the last item
         }
     }
     // v1.6.4 (JAG-57): saveable across recomposition/rotation.
@@ -1886,16 +1886,34 @@ fun ForgeScreen(
                     .padding(end = 16.dp, bottom = 84.dp)
                     .background(if (atBottom) FPanelRaised else FMint, RoundedCornerShape(999.dp))
                     .clickable {
-                        scope.launch { listState.animateScrollToItem(lastItem.coerceAtLeast(0)) }
+                        scope.launch { listState.animateToBottom() }
                     }
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
-                Text("⌄ ultimo", color = if (atBottom) FTextMuted else FInk,
+                Text("⌄ fondo", color = if (atBottom) FTextMuted else FInk,
                     fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
         // v1.6.11 (JAG-62): lateral detail drawer overlay (right edge, arrow to close).
         ForgeToolDetailDrawer(card = selectedTool, onClose = { selectedTool = null })
+    }
+}
+
+/**
+ * v1.6.35 (JAG-101): scroll to the true END of the transcript, not to the last
+ * message. `animateScrollToItem(last)` parks a TALL final message with its TOP at
+ * the viewport top, so the newest text stayed below the fold; the pill "⌄ ultimo"
+ * jumped to the last message, not to the bottom of the chat. Adding a large offset
+ * makes the list clamp to its maximum scroll (the real bottom); the loop is a
+ * defensive fallback for a single pass that does not settle.
+ */
+private const val SCROLL_TO_END_OFFSET = 100_000_000
+
+private suspend fun LazyListState.animateToBottom() {
+    if (layoutInfo.totalItemsCount == 0) return
+    var guard = 0
+    while (canScrollForward && guard++ < 12) {
+        animateScrollToItem(layoutInfo.totalItemsCount - 1, SCROLL_TO_END_OFFSET)
     }
 }
 
