@@ -69,19 +69,21 @@ import java.net.URLEncoder
 
 // v1.6.31 (JAG-96): palette allineata al redesign della WebUI (index.html).
 // Un'unica identità visiva tra PC e telefono: stessi accenti, stesse superfici.
-internal val FInk = Color(0xFF06070C)        // app background  (--bg)
-internal val FPanel = Color(0xFF121722)      // panel surface   (--bg-2)
-internal val FPanelRaised = Color(0xFF161B25) // raised panel   (--bg-3)
-internal val FTextMain = Color(0xFFDFE4FF)   // primary text    (--txt)
-internal val FTextMuted = Color(0xFF7C86AD)  // muted text      (--dim)
-internal val FLine = Color(0xFF1E2431)       // borders         (--line-2)
-internal val FMint = Color(0xFF4ADE80)       // ok              (--ok)
-internal val FBlue = Color(0xFF5AC8FA)       // info            (--info)
-internal val FYou = Color(0xFF8FB6FF)        // user accent     (--you)
-internal val FAmber = Color(0xFFFFB020)      // warn            (--warn)
-internal val FCoral = Color(0xFFF87171)      // err             (--err)
-internal val FViolet = Color(0xFFB56CFF)     // accent 2        (--acc2)
-internal val FAccent = Color(0xFF8B7BF0)     // brand accent    (--accent)
+// JAG-97: i token vivono in ForgeTheme.kt (single source of truth). Gli alias
+// `F*` mantengono i nomi usati dalle ~2100 righe di questo file.
+internal val FInk = ForgeInk            // app background  (--bg)
+internal val FPanel = ForgePanel        // panel surface   (--bg-2)
+internal val FPanelRaised = ForgePanelRaised // raised panel (--bg-3)
+internal val FTextMain = ForgeTextMain  // primary text    (--txt)
+internal val FTextMuted = ForgeTextMuted // muted text     (--dim)
+internal val FLine = ForgeLine          // borders         (--line-2)
+internal val FMint = ForgeMint          // ok              (--ok)
+internal val FBlue = ForgeBlue          // info            (--info)
+internal val FYou = ForgeYou            // user accent     (--you)
+internal val FAmber = ForgeAmber        // warn            (--warn)
+internal val FCoral = ForgeCoral        // err             (--err)
+internal val FViolet = ForgeViolet      // accent 2        (--acc2)
+internal val FAccent = ForgeAccent      // brand accent    (--accent)
 
 /** Quick-action "Dove sei / comandi": goal that makes the agent invoke the v0.5 `self` tool. */
 internal const val SELF_GOAL =

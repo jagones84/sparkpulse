@@ -58,18 +58,20 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val Ink = Color(0xFF06070C)
-private val Panel = Color(0xFF121722)
-private val PanelRaised = Color(0xFF161B25)
-private val TextMain = Color(0xFFDFE4FF)
-private val TextMuted = Color(0xFF7C86AD)
-private val Mint = Color(0xFF4ADE80)
-private val Amber = Color(0xFFFFB020)
-private val Coral = Color(0xFFF87171)
-private val Blue = Color(0xFF5AC8FA)
-private val Violet = Color(0xFFB56CFF)
-private val Accent = Color(0xFF8B7BF0)
-private val Line = Color(0xFF1E2431)
+// JAG-97: palette dal tema condiviso (ForgeTheme.kt) — nessuna ridefinizione
+// locale, cosi' un cambio tema tocca un solo file.
+private val Ink = ForgeInk
+private val Panel = ForgePanel
+private val PanelRaised = ForgePanelRaised
+private val TextMain = ForgeTextMain
+private val TextMuted = ForgeTextMuted
+private val Mint = ForgeMint
+private val Amber = ForgeAmber
+private val Coral = ForgeCoral
+private val Blue = ForgeBlue
+private val Violet = ForgeViolet
+private val Accent = ForgeAccent
+private val Line = ForgeLine
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -120,27 +122,13 @@ private fun ForgeTabBar(current: Int, onSelect: (Int) -> Unit) {
             .padding(5.dp),
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        listOf("PULSE", "⚡ FORGE", "COMMAND").forEachIndexed { index, label ->
-            val selected = current == index
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .background(
-                        if (selected) Brush.horizontalGradient(listOf(Accent, Violet))
-                        else Brush.horizontalGradient(listOf(PanelRaised, PanelRaised)),
-                        RoundedCornerShape(50)
-                    )
-                    .clickable { onSelect(index) }
-                    .padding(vertical = 11.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    label,
-                    color = if (selected) Color.White else TextMuted,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
-                )
-            }
+        listOf("📊 PULSE", "⚡ FORGE", "⌘ COMMAND").forEachIndexed { index, label ->
+            AccentPill(
+                text = label,
+                selected = current == index,
+                onClick = { onSelect(index) },
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
@@ -161,14 +149,7 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
             ) {
                 Column {
                     Text("SPARKPULSE", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
-                    Text(
-                        "DGX Spark",
-                        style = TextStyle(
-                            brush = Brush.horizontalGradient(listOf(TextMain, Violet, Blue)),
-                            fontSize = 30.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
+                    GradientTitle("DGX Spark", fontSize = 30)
                 }
                 ConnectionBadge(state.connection, state.demoMode)
             }
@@ -411,12 +392,7 @@ private fun MetricTile(label: String, value: String, accent: Color, modifier: Mo
 
 @Composable
 private fun SectionCard(title: String, trailing: String = "", content: @Composable () -> Unit) {
-    Column(
-        Modifier.fillMaxWidth()
-            .background(Panel, RoundedCornerShape(18.dp))
-            .border(BorderStroke(1.dp, Line), RoundedCornerShape(18.dp))
-            .padding(16.dp)
-    ) {
+    ForgeCard {
         Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(title, color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp, modifier = Modifier.weight(1f))
             if (trailing.isNotEmpty()) Text(trailing, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -454,13 +430,7 @@ private fun ConnectionBadge(connection: ConnectionState, demo: Boolean) {
         connection == ConnectionState.RETRY -> "RETRY"
         else -> "OFFLINE"
     }
-    Row(
-        modifier = Modifier.background(Panel, RoundedCornerShape(50)).padding(horizontal = 11.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(Modifier.size(7.dp).background(tint, CircleShape))
-        Text(label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 7.dp))
-    }
+    StatusPill(label, tint)
 }
 
 private fun Double.oneDecimal(): String = String.format(Locale.ROOT, "%.1f", this)
