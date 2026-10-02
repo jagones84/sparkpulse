@@ -3,7 +3,9 @@ package com.jagones.sparkpulse
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -46,6 +49,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,15 +58,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val Ink = Color(0xFF0A0E14)
-private val Panel = Color(0xFF141B24)
-private val PanelRaised = Color(0xFF1B2531)
-private val TextMain = Color(0xFFF0F4F8)
-private val TextMuted = Color(0xFF9AA8B7)
-private val Mint = Color(0xFF57E3B1)
-private val Amber = Color(0xFFFFC66D)
-private val Coral = Color(0xFFFF7777)
-private val Blue = Color(0xFF8DB8FF)
+private val Ink = Color(0xFF06070C)
+private val Panel = Color(0xFF121722)
+private val PanelRaised = Color(0xFF161B25)
+private val TextMain = Color(0xFFDFE4FF)
+private val TextMuted = Color(0xFF7C86AD)
+private val Mint = Color(0xFF4ADE80)
+private val Amber = Color(0xFFFFB020)
+private val Coral = Color(0xFFF87171)
+private val Blue = Color(0xFF5AC8FA)
+private val Violet = Color(0xFFB56CFF)
+private val Accent = Color(0xFF8B7BF0)
+private val Line = Color(0xFF1E2431)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,19 +113,34 @@ private fun SparkPulseRoot() {
 @Composable
 private fun ForgeTabBar(current: Int, onSelect: (Int) -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .background(Panel, RoundedCornerShape(50))
+            .border(BorderStroke(1.dp, Line), RoundedCornerShape(50))
+            .padding(5.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         listOf("PULSE", "⚡ FORGE", "COMMAND").forEachIndexed { index, label ->
             val selected = current == index
-            Button(
-                onClick = { onSelect(index) },
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (selected) Mint else PanelRaised,
-                    contentColor = if (selected) Ink else TextMain
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .background(
+                        if (selected) Brush.horizontalGradient(listOf(Accent, Violet))
+                        else Brush.horizontalGradient(listOf(PanelRaised, PanelRaised)),
+                        RoundedCornerShape(50)
+                    )
+                    .clickable { onSelect(index) }
+                    .padding(vertical = 11.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    color = if (selected) Color.White else TextMuted,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
                 )
-            ) { Text(label, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+            }
         }
     }
 }
@@ -138,8 +160,15 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("SPARKPULSE", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                    Text("DGX Spark", color = TextMain, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                    Text("SPARKPULSE", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+                    Text(
+                        "DGX Spark",
+                        style = TextStyle(
+                            brush = Brush.horizontalGradient(listOf(TextMain, Violet, Blue)),
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
                 }
                 ConnectionBadge(state.connection, state.demoMode)
             }
@@ -165,7 +194,15 @@ private fun SparkPulseDashboard(model: StatusViewModel = viewModel()) {
                 val total = state.snapshot.memory.unifiedTotalGb
                 val fraction = if (used != null && total != null && total > 0) (used / total).toFloat().coerceIn(0f, 1f) else 0f
                 Box(Modifier.fillMaxWidth().height(12.dp).background(PanelRaised, RoundedCornerShape(8.dp))) {
-                    Box(Modifier.fillMaxWidth(fraction).height(12.dp).background(if (fraction > 0.85f) Coral else Mint, RoundedCornerShape(8.dp)))
+                    Box(
+                        Modifier.fillMaxWidth(fraction).height(12.dp).background(
+                            Brush.horizontalGradient(
+                                if (fraction > 0.85f) listOf(Amber, Coral)
+                                else listOf(Mint, Blue)
+                            ),
+                            RoundedCornerShape(8.dp)
+                        )
+                    )
                 }
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -355,8 +392,17 @@ private fun TelemetryChart(
 
 @Composable
 private fun MetricTile(label: String, value: String, accent: Color, modifier: Modifier = Modifier, detail: String? = null) {
-    Column(modifier.background(Panel, RoundedCornerShape(16.dp)).padding(horizontal = 12.dp, vertical = 16.dp)) {
-        Text(label, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.6.sp, maxLines = 1)
+    Column(
+        modifier
+            .background(Panel, RoundedCornerShape(18.dp))
+            .border(BorderStroke(1.dp, Line), RoundedCornerShape(18.dp))
+            .padding(horizontal = 12.dp, vertical = 16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).background(accent, CircleShape))
+            Text(label, color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                letterSpacing = 0.6.sp, maxLines = 1, modifier = Modifier.padding(start = 6.dp))
+        }
         Spacer(Modifier.height(8.dp))
         Text(value, color = accent, fontSize = 25.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
         if (detail != null) Text(detail, color = TextMuted, fontSize = 10.sp, maxLines = 1, softWrap = false)
@@ -365,7 +411,12 @@ private fun MetricTile(label: String, value: String, accent: Color, modifier: Mo
 
 @Composable
 private fun SectionCard(title: String, trailing: String = "", content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(16.dp)).padding(16.dp)) {
+    Column(
+        Modifier.fillMaxWidth()
+            .background(Panel, RoundedCornerShape(18.dp))
+            .border(BorderStroke(1.dp, Line), RoundedCornerShape(18.dp))
+            .padding(16.dp)
+    ) {
         Row(Modifier.fillMaxWidth().padding(bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(title, color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp, modifier = Modifier.weight(1f))
             if (trailing.isNotEmpty()) Text(trailing, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
