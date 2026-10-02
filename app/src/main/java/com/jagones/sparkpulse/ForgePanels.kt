@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -237,13 +239,37 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 )
             }
             // JAG-107: bar fill + detail string are server-computed.
-            val pct = (model.ctxBarPct.toFloat() / 100f).coerceIn(0f, 1f)
+            // JAG-110: bigger, always-visible bar + prominent % so saturation is
+            // obvious even at low usage (a pure proportional fill was a sliver).
+            val rawPct = (model.ctxBarPct.toFloat() / 100f).coerceIn(0f, 1f)
+            val fill = if (rawPct > 0f) rawPct.coerceAtLeast(0.02f) else 0f
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    "${model.ctxBarPct}%",
+                    color = when {
+                        model.ctxState == "over" -> FCoral
+                        model.ctxState == "near" -> FAmber
+                        else -> FMint
+                    },
+                    fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    when (model.ctxState) {
+                        "over" -> "sopra soglia"
+                        "near" -> "vicino soglia"
+                        else -> "normale"
+                    },
+                    color = FTextMuted, fontSize = 10.sp,
+                    modifier = Modifier.padding(bottom = 3.dp)
+                )
+            }
             Box(
-                Modifier.fillMaxWidth().heightIn(min = 8.dp).padding(top = 6.dp)
+                Modifier.fillMaxWidth().padding(top = 6.dp).height(14.dp)
                     .background(FInk, RoundedCornerShape(999.dp))
             ) {
                 Box(
-                    Modifier.fillMaxWidth(pct).heightIn(min = 8.dp)
+                    Modifier.fillMaxHeight().fillMaxWidth(fill)
                         .background(
                             if (model.ctxState == "over") FCoral else FMint,
                             RoundedCornerShape(999.dp)

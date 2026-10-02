@@ -1297,7 +1297,9 @@ class ForgeViewModel : ViewModel() {
             }
             result.onSuccess { body ->
                 val j = runCatching { JSONObject(body) }.getOrNull()
-                statusMessage = "Compattato: ${j?.optInt("input_tokens") ?: "?"} → ${j?.optInt("tokens_after") ?: "?"} token"
+                val kind = if (j?.optString("summary") == "llm")
+                    "llm:${j.optString("summarizer", "?")}" else (j?.optString("summary") ?: "—")
+                statusMessage = "Compattato: ${j?.optInt("input_tokens") ?: "?"} → ${j?.optInt("tokens_after") ?: "?"} token · $kind"
                 switchSession(sid)
             }.onFailure { statusMessage = "Errore compaction: ${it.message?.take(120)}" }
         }
@@ -1385,7 +1387,13 @@ class ForgeViewModel : ViewModel() {
                         graphRunId?.let { refreshGraph(it) }
                     }
                     "session.created", "session.deleted" -> refreshSessions()
-                    "context.compact" -> refreshContext()
+                    "context.compact" -> {
+                        val ce = event.json()
+                        val ck = if (ce?.optString("summary") == "llm")
+                            "llm:${ce.optString("summarizer", "?")}" else (ce?.optString("summary") ?: "—")
+                        statusMessage = "contesto compattato · $ck"
+                        refreshContext()
+                    }
                     // v1.6.26 (JAG-79): the durable feed carries approval life-cycle
                     // events too, so a gated tool shows its INLINE card even when no
                     // chat turn is streaming (the 3s poll is only active in a turn).
