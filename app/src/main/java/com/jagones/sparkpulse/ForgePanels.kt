@@ -302,7 +302,7 @@ private fun ForgeCompactPanel(model: ForgeViewModel, onClose: () -> Unit) {
  */
 @Composable
 private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
-    ForgePanelCard(Modifier.heightIn(max = 260.dp)) {
+    ForgePanelCard(Modifier.heightIn(max = 460.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "SETTINGS · politiche dei tool", color = FBlue, fontSize = 10.sp,
@@ -333,6 +333,62 @@ private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
             ) { Text("↻ ricarica", fontSize = 10.sp) }
         }
+        // JAG-129/131: long-horizon runtime (auto-continuation loop) + verifier.
+        var kg by rememberSaveable { mutableStateOf(model.rtKeepgoingMax) }
+        var npr by rememberSaveable { mutableStateOf(model.rtNoProgress) }
+        var wall by rememberSaveable { mutableStateOf(model.rtWallSecs) }
+        var depth by rememberSaveable { mutableStateOf(model.rtDepth) }
+        var vfOn by rememberSaveable { mutableStateOf(model.vfEnabled) }
+        var vfCmd by rememberSaveable { mutableStateOf(model.vfCommand) }
+        LaunchedEffect(model.rtKeepgoingMax, model.rtNoProgress, model.rtWallSecs,
+                       model.rtDepth, model.vfEnabled, model.vfCommand) {
+            kg = model.rtKeepgoingMax
+            npr = model.rtNoProgress
+            wall = model.rtWallSecs
+            depth = model.rtDepth
+            vfOn = model.vfEnabled
+            vfCmd = model.vfCommand
+        }
+        Text(
+            "LONG-HORIZON · auto-continuazione + verifier",
+            color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(value = kg, onValueChange = { kg = it },
+                label = { Text("giri", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = npr, onValueChange = { npr = it },
+                label = { Text("no-prog", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(value = wall, onValueChange = { wall = it },
+                label = { Text("wall s", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = depth, onValueChange = { depth = it },
+                label = { Text("depth", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+        }
+        Button(
+            onClick = { model.setRuntime(kg, npr, wall, depth) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            modifier = Modifier.padding(top = 4.dp)
+        ) { Text("salva runtime", fontSize = 10.sp) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            Checkbox(checked = vfOn, onCheckedChange = { vfOn = it })
+            Text("verifier apply-only-if-green", color = FTextMuted, fontSize = 10.sp)
+        }
+        OutlinedTextField(value = vfCmd, onValueChange = { vfCmd = it },
+            label = { Text("comando verifica (es. python3 -m pytest -q)", fontSize = 8.sp) },
+            modifier = Modifier.fillMaxWidth(), singleLine = true)
+        Button(
+            onClick = { model.setVerifier(vfOn, vfCmd) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            modifier = Modifier.padding(top = 4.dp)
+        ) { Text("salva verifier", fontSize = 10.sp) }
         if (model.tools.isEmpty()) {
             Text(
                 "nessun tool — apri il pannello con il server raggiungibile",

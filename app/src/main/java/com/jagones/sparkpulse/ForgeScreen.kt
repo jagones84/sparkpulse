@@ -527,6 +527,21 @@ class ForgeViewModel : ViewModel() {
     var settingsNotice by mutableStateOf<String?>(null)
         private set
 
+    /** JAG-129/131: long-horizon runtime + verifier policy shown in SETTINGS.
+     *  Mirrors `GET /api/tools` `runtime`/`verifier` and is edited via POST. */
+    var rtKeepgoingMax by mutableStateOf("8")
+        private set
+    var rtNoProgress by mutableStateOf("2")
+        private set
+    var rtWallSecs by mutableStateOf("3600")
+        private set
+    var rtDepth by mutableStateOf("2")
+        private set
+    var vfEnabled by mutableStateOf(false)
+        private set
+    var vfCommand by mutableStateOf("")
+        private set
+
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
      *  v1.6.16 (JAG-70): `used` is the EFFECTIVE prompt size the server really
      *  sends (system prompt + transcript), not just the stored transcript. */
@@ -747,6 +762,7 @@ class ForgeViewModel : ViewModel() {
      * is actually killed and not just the socket.
      */
     fun stop() {
+        cancelGeneration()
         cancelRunningTool()
         client.close()
         streamJob?.cancel()
@@ -755,6 +771,28 @@ class ForgeViewModel : ViewModel() {
         busy = false
         liveThinking = ""
         stopApprovalPoll()
+    }
+
+    /**
+     * JAG-129D: kills the LLM GENERATION itself server-side (`POST /api/chat/abort`).
+     * Without this the harness only learns about the stop between loop iterations,
+     * so the running completion kept streaming to the end. The abort flag is read
+     * at every token by the router stream, which closes the socket and ends the
+     * inference immediately.
+     */
+    private fun cancelGeneration() {
+        val host = boundHost
+        val token = boundToken
+        val sid = sessionId ?: activeSession
+        if (host.isBlank() || sid.isNullOrBlank()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/chat/abort", "POST",
+                              jsonBody = JSONObject().put("session", sid).toString())
+                }
+            }
+        }
     }
 
     /** JAG-68: kill the server-side tool job bound to the active session. */
@@ -883,12 +921,72 @@ class ForgeViewModel : ViewModel() {
         val token = boundToken
         if (host.isEmpty()) return
         viewModelScope.launch {
-            val list = withContext(Dispatchers.IO) {
-                runCatching { parseToolFlags(rest.text(host, token, "/api/tools")) }
-                    .getOrDefault(emptyList())
+            val body = withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, "/api/tools") }.getOrDefault("")
             }
             // enabled tools first, then alphabetical — the useful ones up top.
-            tools = list.sortedWith(compareBy({ !it.enabled }, { it.name }))
+            tools = parseToolFlags(body).sortedWith(compareBy({ !it.enabled }, { it.name }))
+            // JAG-129/131: also sync runtime + verifier policy.
+            runCatching {
+                val j = JSONObject(body)
+                val r = j.optJSONObject("runtime")
+                if (r != null) {
+                    rtKeepgoingMax = r.optInt("keepgoing_max", 8).toString()
+                    rtNoProgress = r.optInt("no_progress_rounds", 2).toString()
+                    rtWallSecs = r.optInt("max_wall_secs", 3600).toString()
+                    rtDepth = r.optInt("subagent_max_depth", 2).toString()
+                }
+                val v = j.optJSONObject("verifier")
+                if (v != null) {
+                    vfEnabled = v.optBoolean("enabled", false)
+                    vfCommand = v.optString("command", "")
+                }
+            }
+        }
+    }
+
+    /** JAG-129: save the long-horizon runtime config (`POST /api/tools` `runtime`). */
+    fun setRuntime(keepgoingMax: String, noProgress: String, wallSecs: String, depth: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        val body = JSONObject()
+            .put("runtime", JSONObject()
+                .put("keepgoing_max", keepgoingMax.toIntOrNull() ?: 8)
+                .put("no_progress_rounds", noProgress.toIntOrNull() ?: 2)
+                .put("max_wall_secs", wallSecs.toIntOrNull() ?: 3600)
+                .put("subagent_max_depth", depth.toIntOrNull() ?: 2))
+        settingsNotice = "Salvo runtime…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "runtime aggiornato" else "Errore sul runtime"
+            refreshTools()
+        }
+    }
+
+    /** JAG-131: enable/disable the "apply-only-if-green" verifier + its command. */
+    fun setVerifier(enabled: Boolean, command: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        val body = JSONObject().put("verifier", JSONObject()
+            .put("enabled", enabled)
+            .put("command", command))
+        settingsNotice = "Salvo verifier…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "verifier aggiornato" else "Errore sul verifier"
+            refreshTools()
         }
     }
 
@@ -1406,6 +1504,29 @@ class ForgeViewModel : ViewModel() {
                         statusMessage = "verify ${"%.2f".format(score)} · " +
                             j?.optString("feedback").orEmpty().take(90)
                     }
+                    // JAG-129: completion-loop + run metrics on the durable feed too.
+                    "plan.continuing" -> {
+                        val j = event.json()
+                        statusMessage = "🔁 continuo da solo — ${j?.optInt("open") ?: 0}/" +
+                            "${j?.optInt("total") ?: 0} (giro ${j?.optInt("round") ?: 0})"
+                    }
+                    "plan.stopped" -> {
+                        val j = event.json()
+                        statusMessage = "stop: ${j?.optString("reason").orEmpty()} — " +
+                            "${j?.optInt("open") ?: 0} aperti / ${j?.optInt("total") ?: 0}"
+                    }
+                    "run.metrics" -> {
+                        val m = event.json()?.optJSONObject("metrics")
+                        if (m != null) statusMessage = "⏱ run: ${m.optDouble("duration_s").toInt()}s · " +
+                            "${m.optInt("iterations")} giri · ${m.optInt("steps")} step"
+                    }
+                    "verify.run" -> {
+                        val j = event.json()
+                        if (j != null && j.optBoolean("ran")) {
+                            statusMessage = if (j.optBoolean("green")) "✅ verifier green"
+                            else "⛔ verifier ROSSO — modifica annullata"
+                        }
+                    }
                     "context.built" -> {
                         // JAG-107: live, authoritative context display for this turn.
                         applyCtxDisplay(event.json()?.optJSONObject("display"))
@@ -1548,6 +1669,45 @@ class ForgeViewModel : ViewModel() {
             "tool.result" -> event.json()?.let(::updateToolCard)
             // v1.6.26 (JAG-79): approvals surface INLINE in the chat transcript.
             "approval.request", "approval.resolved", "approval.decided" -> refreshApprovals()
+            // JAG-129A/B: the harness keeps working on its own until the TASK LIST is
+            // closed. Surface the loop state so the phone shows it is NOT stuck.
+            "plan.continuing" -> {
+                val j = event.json()
+                statusMessage = "🔁 continuo da solo — ${j?.optInt("open") ?: 0}/" +
+                    "${j?.optInt("total") ?: 0} passi aperti (giro ${j?.optInt("round") ?: 0})"
+            }
+            "plan.stopped" -> {
+                val j = event.json()
+                val reason = when (j?.optString("reason")) {
+                    "goal_reached" -> "✅ goal raggiunto"
+                    "no_progress" -> "⚠ nessun progresso"
+                    "budget" -> "⏱ budget esaurito"
+                    "blocked" -> "⛔ bloccato"
+                    "user_stop" -> "⏹ fermato da te"
+                    else -> j?.optString("reason").orEmpty().ifEmpty { "stop" }
+                }
+                statusMessage = "$reason — ${j?.optInt("open") ?: 0} aperti / " +
+                    "${j?.optInt("total") ?: 0} · ${j?.optInt("rounds") ?: 0} giri"
+            }
+            // JAG-129E: how long the run worked (duration/rounds/steps/tokens).
+            "run.metrics" -> {
+                val m = event.json()?.optJSONObject("metrics")
+                if (m != null) {
+                    statusMessage = "⏱ ${m.optString("stop_reason").ifEmpty { m.optString("outcome") }}" +
+                        " · ${m.optInt("iterations")} giri · ${m.optInt("steps")} step · " +
+                        "${m.optInt("tokens")} tok · ${m.optDouble("duration_s").toInt()}s"
+                }
+            }
+            "chat.interrupted" -> statusMessage = "⏹ generazione interrotta"
+            // JAG-131: "apply-only-if-green" — the write was verified (or rolled back).
+            "verify.run" -> {
+                val j = event.json()
+                if (j != null && j.optBoolean("ran")) {
+                    val name = j.optString("path").substringAfterLast("/")
+                    statusMessage = if (j.optBoolean("green")) "✅ verifier green · $name"
+                    else "⛔ verifier ROSSO — modifica annullata · $name"
+                }
+            }
             "error" -> error = "Chat: " + (event.json()?.optString("error") ?: "errore").take(160)
         }
     }
