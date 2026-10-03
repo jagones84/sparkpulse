@@ -128,6 +128,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                     if (keep != "cot" && model.cotOpen) model.toggleCot()
                     if (keep != "self" && model.selfOpen) model.toggleSelf()
                     if (keep != "settings" && model.settingsOpen) model.toggleSettings()
+                    if (keep != "files" && model.filesOpen) model.toggleFiles()
                 }
                 Column(Modifier.width(126.dp)) {
                     ForgeRailItem("SESSIONI", sessionsOpen) {
@@ -162,6 +163,11 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         closeOthers("settings")
                         if (on != model.settingsOpen) model.toggleSettings()
                     }
+                    ForgeRailItem("📄 FILES", model.filesOpen) {
+                        val on = !model.filesOpen
+                        closeOthers("files")
+                        if (on != model.filesOpen) model.toggleFiles()
+                    }
                 }
                 Column(Modifier.weight(1f)) {
                     when {
@@ -171,6 +177,7 @@ fun ForgeToolbar(model: ForgeViewModel) {
                         model.cotOpen -> ForgeCotDrawer(model)
                         model.selfOpen -> ForgeSelfPanel(model)
                         model.settingsOpen -> ForgeSettingsPanel(model) { model.toggleSettings() }
+                        model.filesOpen -> ForgeFilesPanel(model) { model.toggleFiles() }
                         else -> Text(
                             "Scegli un pannello a sinistra.",
                             color = FTextMuted, fontSize = 11.sp
@@ -505,6 +512,101 @@ private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
             }
         }
     }
+}
+
+/**
+ * JAG-137 — FILES: workspace file browser (parity with the WebUI "Files" tab).
+ * Rooted at the SESSION workspace (`GET /api/fs/list?session=`) so it follows the
+ * folder the session was opened on; tapping a file shows its text (`/api/fs/read`).
+ */
+@Composable
+private fun ForgeFilesPanel(model: ForgeViewModel, onClose: () -> Unit) {
+    ForgePanelCard(Modifier.heightIn(max = 360.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "FILES · workspace", color = FBlue, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, letterSpacing = 1.sp, modifier = Modifier.weight(1f)
+            )
+            Box(Modifier.clickable { onClose() }.padding(6.dp)) {
+                Text("✕", color = FTextMuted, fontSize = 14.sp)
+            }
+        }
+        // The folder this session is bound to (must match the opened session).
+        Text(
+            "ws: " + model.filesRoot.ifEmpty { "n/d" },
+            color = FViolet, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp)
+        )
+        val open = model.openFilePath
+        if (open != null) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 4.dp)) {
+                Button(
+                    onClick = { model.closeFile() },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                ) { Text("‹ lista", fontSize = 10.sp) }
+            }
+            Text(open, color = FTextMuted, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
+            Text(
+                model.openFileText, color = FTextMain, fontSize = 10.sp,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp)
+                    .verticalScroll(rememberScrollState()).padding(top = 4.dp)
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(top = 4.dp)) {
+                Button(
+                    onClick = { model.filesUp() },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                ) { Text("↥ su", fontSize = 10.sp) }
+                Button(
+                    onClick = { model.loadFiles(null) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                ) { Text("⌂ root", fontSize = 10.sp) }
+                Button(
+                    onClick = { model.loadFiles(model.filesPath) },
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+                ) { Text("↻", fontSize = 10.sp) }
+            }
+            Text(model.filesPath, color = FTextMuted, fontSize = 9.sp,
+                 modifier = Modifier.padding(top = 4.dp))
+            model.fileNotice?.let {
+                Text("⛔ " + it, color = FCoral, fontSize = 10.sp,
+                     modifier = Modifier.padding(top = 4.dp))
+            }
+            if (model.fileEntries.isEmpty() && model.fileNotice == null) {
+                Text("cartella vuota", color = FTextMuted, fontSize = 11.sp,
+                     modifier = Modifier.padding(top = 6.dp))
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    items(model.fileEntries) { e ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                if (e.isDir) model.loadFiles(e.path) else model.openFile(e.path)
+                            }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(if (e.isDir) "📁" else "📄", fontSize = 12.sp)
+                            Text(
+                                e.name, color = if (e.isDir) FBlue else FTextMain, fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 6.dp).weight(1f)
+                            )
+                            if (!e.isDir) {
+                                Text(_fmtBytes(e.size), color = FTextMuted, fontSize = 9.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Human file size (B / kB / MB) for the FILES listing. */
+private fun _fmtBytes(n: Long): String = when {
+    n < 1024 -> "$n B"
+    n < 1048576 -> "%.1f kB".format(n / 1024.0)
+    else -> "%.1f MB".format(n / 1048576.0)
 }
 
 /**

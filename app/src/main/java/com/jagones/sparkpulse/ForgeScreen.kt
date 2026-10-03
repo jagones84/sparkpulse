@@ -151,6 +151,39 @@ internal fun toolCardFromResult(data: JSONObject): ForgeToolCard = ForgeToolCard
 /** One persisted SparkForge session, as returned by `GET /api/sessions` (v0.5). */
 data class ForgeSession(val id: String, val title: String, val messages: Int, val created: Double)
 
+/** JAG-137: one entry of the workspace file browser (`GET /api/fs/list`). */
+data class ForgeFileEntry(val name: String, val path: String, val isDir: Boolean, val size: Long = 0)
+
+/** JAG-137: a whole directory listing for the FILES panel. */
+data class ForgeFsListing(
+    val root: String,
+    val path: String,
+    val entries: List<ForgeFileEntry>,
+    val error: String? = null
+)
+
+/** Parses the `/api/fs/list` payload (root/path/dirs/files/error). */
+internal fun parseFsList(body: String): ForgeFsListing {
+    val o = runCatching { JSONObject(body) }.getOrNull()
+        ?: return ForgeFsListing("", "", emptyList(), "risposta non valida")
+    val err = o.optString("error").ifEmpty { null }
+    val entries = mutableListOf<ForgeFileEntry>()
+    (o.optJSONArray("dirs") ?: JSONArray()).let { arr ->
+        for (i in 0 until arr.length()) {
+            val d = arr.optJSONObject(i) ?: continue
+            entries += ForgeFileEntry(d.optString("name"), d.optString("path"), true)
+        }
+    }
+    (o.optJSONArray("files") ?: JSONArray()).let { arr ->
+        for (i in 0 until arr.length()) {
+            val f = arr.optJSONObject(i) ?: continue
+            entries += ForgeFileEntry(f.optString("name"), f.optString("path"), false,
+                                      f.optLong("size", 0))
+        }
+    }
+    return ForgeFsListing(o.optString("root"), o.optString("path"), entries, err)
+}
+
 /**
  * v1.6.17 (JAG-71): one selectable model from the provider catalogue
  * (`GET /api/providers`). `ref` is the `<provider>:<model>` reference sent to the
@@ -561,6 +594,23 @@ class ForgeViewModel : ViewModel() {
     var seCategory by mutableStateOf("auto")
         private set
 
+    /** JAG-137: FILES panel — workspace browser mirroring the WebUI Files tab
+     *  (`GET /api/fs/list` rooted at the SESSION workspace + `/api/fs/read`). */
+    var filesOpen by mutableStateOf(false)
+        private set
+    var filesRoot by mutableStateOf("")
+        private set
+    var filesPath by mutableStateOf("")
+        private set
+    var fileEntries by mutableStateOf(listOf<ForgeFileEntry>())
+        private set
+    var fileNotice by mutableStateOf<String?>(null)
+        private set
+    var openFilePath by mutableStateOf<String?>(null)
+        private set
+    var openFileText by mutableStateOf("")
+        private set
+
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
      *  v1.6.16 (JAG-70): `used` is the EFFECTIVE prompt size the server really
      *  sends (system prompt + transcript), not just the stored transcript. */
@@ -932,6 +982,75 @@ class ForgeViewModel : ViewModel() {
             settingsNotice = null
             refreshTools()
         }
+    }
+
+    // ── JAG-137: FILES — workspace browser (parity with the WebUI Files tab) ──
+
+    /** Open/close the FILES panel; opening lists the SESSION workspace root. */
+    fun toggleFiles() {
+        filesOpen = !filesOpen
+        if (filesOpen) {
+            openFilePath = null
+            loadFiles(null)
+        }
+    }
+
+    /** `GET /api/fs/list?session=` — list a directory (null = the workspace root). */
+    fun loadFiles(path: String?) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) { fileNotice = "nessun server"; return }
+        val sid = activeSession ?: sessionId ?: ""
+        var q = "/api/fs/list?session=" + URLEncoder.encode(sid, "UTF-8")
+        if (!path.isNullOrEmpty()) q += "&path=" + URLEncoder.encode(path, "UTF-8")
+        viewModelScope.launch {
+            val body = withContext(Dispatchers.IO) {
+                runCatching { rest.text(host, token, q) }.getOrDefault("")
+            }
+            val d = parseFsList(body)
+            filesRoot = d.root
+            if (d.path.isNotEmpty()) filesPath = d.path
+            fileEntries = d.entries
+            fileNotice = d.error
+        }
+    }
+
+    /** Go one directory up (never above the workspace root). */
+    fun filesUp() {
+        val p = filesPath
+        if (p.isEmpty() || p == filesRoot) { loadFiles(null); return }
+        val parent = p.substringBeforeLast('/', "")
+        loadFiles(if (parent.isEmpty() || !parent.startsWith(filesRoot)) filesRoot else parent)
+    }
+
+    /** `GET /api/fs/read?path=` — open a text file inside the panel. */
+    fun openFile(path: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        openFilePath = path
+        openFileText = "…"
+        viewModelScope.launch {
+            val body = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/fs/read?path=" + URLEncoder.encode(path, "UTF-8"))
+                }.getOrDefault("")
+            }
+            val o = runCatching { JSONObject(body) }.getOrNull()
+            openFileText = when {
+                o == null -> "(risposta non valida)"
+                o.optString("error").isNotEmpty() -> "⛔ " + o.optString("error")
+                o.optBoolean("binary") -> "(file binario — non visualizzabile)"
+                o.optBoolean("truncated") -> o.optString("text") + "\n\n…[troncato a 1 MiB]"
+                else -> o.optString("text")
+            }
+        }
+    }
+
+    /** Close the opened file and return to the directory listing. */
+    fun closeFile() {
+        openFilePath = null
+        openFileText = ""
     }
 
     /** `GET /api/tools` — the catalog with enabled/approval per tool. */
