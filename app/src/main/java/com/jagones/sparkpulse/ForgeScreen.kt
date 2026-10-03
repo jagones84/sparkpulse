@@ -542,6 +542,25 @@ class ForgeViewModel : ViewModel() {
     var vfCommand by mutableStateOf("")
         private set
 
+    /** JAG-134/135/136: best-of-N, difficulty budget e self-evolving mining.
+     *  Mirror di `GET /api/tools` (`bestofn`/`difficulty`/`selfevolve`), edit via POST. */
+    var bnEnabled by mutableStateOf(false)
+        private set
+    var bnN by mutableStateOf("1")
+        private set
+    var dfEnabled by mutableStateOf(true)
+        private set
+    var dfEasy by mutableStateOf("1")
+        private set
+    var dfMed by mutableStateOf("2")
+        private set
+    var dfHard by mutableStateOf("3")
+        private set
+    var seMinCount by mutableStateOf("3")
+        private set
+    var seCategory by mutableStateOf("auto")
+        private set
+
     /** Token indicator fed by `GET /api/context` (v1.6.3: real session values).
      *  v1.6.16 (JAG-70): `used` is the EFFECTIVE prompt size the server really
      *  sends (system prompt + transcript), not just the stored transcript. */
@@ -941,6 +960,23 @@ class ForgeViewModel : ViewModel() {
                     vfEnabled = v.optBoolean("enabled", false)
                     vfCommand = v.optString("command", "")
                 }
+                val b = j.optJSONObject("bestofn")
+                if (b != null) {
+                    bnEnabled = b.optBoolean("enabled", false)
+                    bnN = b.optInt("n", 1).toString()
+                }
+                val df = j.optJSONObject("difficulty")
+                if (df != null) {
+                    dfEnabled = df.optBoolean("enabled", true)
+                    dfEasy = df.optInt("easy_n", 1).toString()
+                    dfMed = df.optInt("medium_n", 2).toString()
+                    dfHard = df.optInt("hard_n", 3).toString()
+                }
+                val se = j.optJSONObject("selfevolve")
+                if (se != null) {
+                    seMinCount = se.optInt("min_count", 3).toString()
+                    seCategory = se.optString("category", "auto")
+                }
             }
         }
     }
@@ -986,6 +1022,71 @@ class ForgeViewModel : ViewModel() {
                 }.getOrDefault(false)
             }
             settingsNotice = if (ok) "verifier aggiornato" else "Errore sul verifier"
+            refreshTools()
+        }
+    }
+
+    /** JAG-132: best-of-N (test-time compute) on/off + N campioni. */
+    fun setBestofn(enabled: Boolean, n: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        val body = JSONObject().put("bestofn", JSONObject()
+            .put("enabled", enabled)
+            .put("n", (n.toIntOrNull() ?: 1).coerceIn(1, 16)))
+        settingsNotice = "Salvo best-of-N…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "best-of-N aggiornato" else "Errore sul best-of-N"
+            refreshTools()
+        }
+    }
+
+    /** JAG-134: budget adattivo per difficoltà (N easy/medium/hard). */
+    fun setDifficulty(enabled: Boolean, easy: String, med: String, hard: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        val body = JSONObject().put("difficulty", JSONObject()
+            .put("enabled", enabled)
+            .put("easy_n", (easy.toIntOrNull() ?: 1).coerceIn(1, 16))
+            .put("medium_n", (med.toIntOrNull() ?: 2).coerceIn(1, 16))
+            .put("hard_n", (hard.toIntOrNull() ?: 3).coerceIn(1, 16)))
+        settingsNotice = "Salvo difficulty…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "difficulty aggiornato" else "Errore su difficulty"
+            refreshTools()
+        }
+    }
+
+    /** JAG-135: self-evolving mining (soglia occorrenze + categoria di destinazione). */
+    fun setSelfevolve(minCount: String, category: String) {
+        val host = boundHost
+        val token = boundToken
+        if (host.isEmpty()) return
+        val body = JSONObject().put("selfevolve", JSONObject()
+            .put("min_count", (minCount.toIntOrNull() ?: 3).coerceIn(2, 99))
+            .put("category", category.ifBlank { "auto" }))
+        settingsNotice = "Salvo selfevolve…"
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    rest.text(host, token, "/api/tools", "POST", jsonBody = body.toString())
+                    true
+                }.getOrDefault(false)
+            }
+            settingsNotice = if (ok) "selfevolve aggiornato" else "Errore su selfevolve"
             refreshTools()
         }
     }

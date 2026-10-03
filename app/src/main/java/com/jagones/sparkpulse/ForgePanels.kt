@@ -312,6 +312,9 @@ private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
                 Text("✕", color = FTextMuted, fontSize = 14.sp)
             }
         }
+        // JAG-136: the config controls scroll inside the panel so the added
+        // best-of-N/difficulty/selfevolve cards never push the tool list off-screen.
+        Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
         Text(
             "AUTO = esegue senza chiedere approvazione · ON = tool abilitato",
             color = FTextMuted, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp)
@@ -389,13 +392,90 @@ private fun ForgeSettingsPanel(model: ForgeViewModel, onClose: () -> Unit) {
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
             modifier = Modifier.padding(top = 4.dp)
         ) { Text("salva verifier", fontSize = 10.sp) }
+        // JAG-132/134/135: best-of-N, difficulty budget e self-evolving mining.
+        var bnOn by rememberSaveable { mutableStateOf(model.bnEnabled) }
+        var bnNv by rememberSaveable { mutableStateOf(model.bnN) }
+        var dfOn by rememberSaveable { mutableStateOf(model.dfEnabled) }
+        var dfE by rememberSaveable { mutableStateOf(model.dfEasy) }
+        var dfM by rememberSaveable { mutableStateOf(model.dfMed) }
+        var dfH by rememberSaveable { mutableStateOf(model.dfHard) }
+        var seC by rememberSaveable { mutableStateOf(model.seMinCount) }
+        var seCat by rememberSaveable { mutableStateOf(model.seCategory) }
+        LaunchedEffect(model.bnEnabled, model.bnN, model.dfEnabled, model.dfEasy,
+                       model.dfMed, model.dfHard, model.seMinCount, model.seCategory) {
+            bnOn = model.bnEnabled
+            bnNv = model.bnN
+            dfOn = model.dfEnabled
+            dfE = model.dfEasy
+            dfM = model.dfMed
+            dfH = model.dfHard
+            seC = model.seMinCount
+            seCat = model.seCategory
+        }
+        Text(
+            "TEST-TIME COMPUTE · best-of-N + difficoltà",
+            color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+            Checkbox(checked = bnOn, onCheckedChange = { bnOn = it })
+            Text("best-of-N", color = FTextMuted, fontSize = 10.sp)
+            OutlinedTextField(value = bnNv, onValueChange = { bnNv = it },
+                label = { Text("N", fontSize = 8.sp) },
+                modifier = Modifier.padding(start = 4.dp).weight(1f), singleLine = true)
+        }
+        Button(
+            onClick = { model.setBestofn(bnOn, bnNv) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
+        ) { Text("salva best-of-N", fontSize = 10.sp) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+            Checkbox(checked = dfOn, onCheckedChange = { dfOn = it })
+            Text("difficulty budget (N per livello)", color = FTextMuted, fontSize = 10.sp)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(value = dfE, onValueChange = { dfE = it },
+                label = { Text("easy", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = dfM, onValueChange = { dfM = it },
+                label = { Text("med", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = dfH, onValueChange = { dfH = it },
+                label = { Text("hard", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+        }
+        Button(
+            onClick = { model.setDifficulty(dfOn, dfE, dfM, dfH) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            modifier = Modifier.padding(top = 4.dp)
+        ) { Text("salva difficulty", fontSize = 10.sp) }
+        Text(
+            "SELF-EVOLVING · skill mining",
+            color = FViolet, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            letterSpacing = 0.5.sp, modifier = Modifier.padding(top = 8.dp)
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedTextField(value = seC, onValueChange = { seC = it },
+                label = { Text("occorrenze", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = seCat, onValueChange = { seCat = it },
+                label = { Text("categoria", fontSize = 8.sp) },
+                modifier = Modifier.weight(1f), singleLine = true)
+        }
+        Button(
+            onClick = { model.setSelfevolve(seC, seCat) },
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+            modifier = Modifier.padding(top = 4.dp)
+        ) { Text("salva selfevolve", fontSize = 10.sp) }
+        }
         if (model.tools.isEmpty()) {
             Text(
                 "nessun tool — apri il pannello con il server raggiungibile",
                 color = FTextMuted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp)
             )
         } else {
-            LazyColumn(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 170.dp).padding(top = 6.dp)) {
                 items(model.tools) { t ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
